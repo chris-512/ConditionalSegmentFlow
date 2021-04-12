@@ -15,7 +15,7 @@ from torch import optim
 from args import get_args
 from torch.backends import cudnn
 from utils import AverageValueMeter, set_random_seed, resume, save
-from dataset import SamplePointData, decode_obj
+from dataset_coco import SamplePointData, decode_obj
 
 from utils import draw_hyps
 
@@ -76,12 +76,12 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
 
     print("Start epoch: %d End epoch: %d" % (start_epoch, args.epochs))
     train_set = SamplePointData(
-        split='train', root=args.data_dir, width=256, height=256)
+        split='train2017', root=args.data_dir, width=256, height=256)
     train_loader = torch.utils.data.DataLoader(
         dataset=train_set, batch_size=args.batch_size, shuffle=True,
         num_workers=0, pin_memory=True)
     test_set = SamplePointData(
-        split='train', root=args.data_dir, width=256, height=256)
+        split='val2017', root=args.data_dir, width=256, height=256)
     test_loader = torch.utils.data.DataLoader(
         dataset=test_set, batch_size=1, shuffle=False,
         num_workers=0, pin_memory=True)
@@ -104,7 +104,7 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
             # import pdb
             # pdb.set_trace()
             y = y.repeat(1, 20, 1)
-            # y += torch.randn(y.shape[0], y.shape[1], y.shape[2]).to(args.gpu)
+            #y += torch.randn(y.shape[0], y.shape[1], y.shape[2]).to(args.gpu)
             step = bidx + len(train_loader) * epoch
             model.train()
             recon_nats = model(x, y, optimizer, step, None)

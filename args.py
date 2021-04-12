@@ -22,7 +22,7 @@ def add_args(parser):
     parser.add_argument("--latent_num_blocks", type=int, default=1,
                         help='Number of stacked CNFs.')
     parser.add_argument("--input_channels", type=int,
-                        default=10, help='Number of input channels of FlowNet')
+                        default=15, help='Number of input channels of FlowNet')
     parser.add_argument("--layer_type", type=str,
                         default="concatsquash", choices=LAYERS)
     parser.add_argument('--time_length', type=float, default=0.5)
