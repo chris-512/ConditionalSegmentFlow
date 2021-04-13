@@ -146,18 +146,50 @@ class HyperRegression(nn.Module):
             y, target_networks_weights, torch.zeros(batch_size, y.size(1), 1).to(y))
         if self.logprob_type == "Laplace":
             log_py = standard_laplace_logprob(y).view(
-                batch_size, -1).sum(1, keepdim=True)
+                batch_size, -1, 2)  # .sum(1, keepdim=True)
         if self.logprob_type == "Normal":
             log_py = standard_normal_logprob(y).view(
-                batch_size, -1).sum(1, keepdim=True)
-        delta_log_py = delta_log_py.view(batch_size, y.size(1), 1).sum(1)
-        log_px = log_py - delta_log_py
+                batch_size, -1, 2)  # .sum(1, keepdim=True)
+        delta_log_py = delta_log_py.view(batch_size, y.size(1), 1)  # .sum(1)
 
-        loss = -log_px.mean()
+        # log_px = log_py - delta_log_py
+
+        gt_labels = x[:, 3:5, 0, 0]
+        onehot_tensor = torch.eye(2).cuda()
+        bg_onehot = onehot_tensor[0]  # background
+        person_onehot = onehot_tensor[1]  # person
+        # bg_indices = np.where((gt_labels == (1, 0)).all(axis=1))
+        bg_indices = (gt_labels == bg_onehot)[
+            :, 0].nonzero(as_tuple=True)[0]
+        person_indices = (gt_labels == person_onehot)[
+            :, 0].nonzero(as_tuple=True)[0]
+        print('bg : ', len(bg_indices))
+        print('person : ', len(person_indices))
+        # person_indices = np.where((gt_labels == (0, 1)).all(axis=1))
+
+        pos_log_px = log_py[person_indices, :30, :].view(len(person_indices), -1).sum(
+            1, keepdim=True) - delta_log_py[person_indices, :30, :].sum(1)
+        neg_log_px = log_py[person_indices, 30:, :].view(len(
+            person_indices), -1).sum(1, keepdim=True) + delta_log_py[person_indices, 30:, :].sum(1)
+
+        if len(bg_indices) != 0:
+            bg_log_px = log_py[bg_indices, :90, :].view(len(bg_indices), -1).sum(
+                1, keepdim=True) - delta_log_py[bg_indices, :90, :].sum(1)
+
+            loss = -(pos_log_px + 0.2 * neg_log_px).mean() - \
+                (0.2 * bg_log_px).mean()
+            recon = -(pos_log_px + 0.2 * neg_log_px).sum() - bg_log_px.sum()
+        else:
+            loss = -(pos_log_px + 0.2 * neg_log_px).mean()
+            recon = -(pos_log_px + 0.2 * neg_log_px).sum()
 
         loss.backward()
         opt.step()
-        recon = -log_px.sum()
+
+        # loss = loss + bg_loss
+        # loss.backward()
+
+        # recon = -(pos_log_px - neg_log_px).sum()
         recon_nats = recon / float(y.size(0))
         return recon_nats
 
@@ -193,7 +225,7 @@ class HyperRegression(nn.Module):
                 (z.size(0), num_points, self.input_dim), self.gpu)
         if self.logprob_type == "Normal":
             y = self.sample_gaussian(
-                (z.size(0), num_points, self.input_dim), None, self.gpu)
+                (z.size(0), num_points, self.input_dim), trucated_std=0.5, gpu=self.gpu)
         x = self.point_cnf(y, target_networks_weights,
                            reverse=True).view(*y.size())
         return y, x

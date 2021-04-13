@@ -27,7 +27,7 @@ def get_grid_logprob(
 
 
 def main(args):
-    model = HyperRegression(args)
+    model = HyperRegression(args, input_width=256, input_height=256)
     model = model.cuda()
     resume_checkpoint = args.resume_checkpoint
     print(f"Resume Path: {resume_checkpoint}")
@@ -46,74 +46,76 @@ def main(args):
 
     counter = 0.0
 
+    test_set = SamplePointData(
+        split='val2017', root=args.data_dir, width=256, height=256)
+    test_loader = torch.utils.data.DataLoader(
+        dataset=test_set, batch_size=1, shuffle=False,
+        num_workers=0, pin_memory=True)
+
     results = []
-    for session_id in range(len(data_test.dataset.scenes)):
-        data_test.test_id = session_id
-        test_loader = torch.utils.data.DataLoader(
-            dataset=data_test, batch_size=1, shuffle=False,
-            num_workers=0, pin_memory=True)
-        for bidx, data in enumerate(test_loader):
 
-            x, y_gt = data
-            x = x.float().to(args.gpu)
-            y_gt = y_gt.float().to(args.gpu).unsqueeze(1)
-            _, y_pred = model.decode(x, 1000)
+    for bidx, data in enumerate(test_loader):
 
-            log_py, log_px, _ = model.get_logprob(x, y_gt)
+        x, y_gt = data
+        x = x.float().to(args.gpu)
+        y_gt = y_gt.float().to(args.gpu).unsqueeze(1)
+        _, y_pred = model.decode(x, 1000)
 
-            log_py = log_py.cpu().detach().numpy().squeeze()
-            log_px = log_px.cpu().detach().numpy().squeeze()
+        log_py, log_px, _ = model.get_logprob(x, y_gt)
 
-            hyps_name = f"{session_id}-{bidx}-hyps.jpg"
-            print(hyps_name)
-            print("nll_x", str(-1.0 * log_px))
-            print("nll_y", str(-1.0 * log_py))
-            print("nll_(x+y)", str(-1.0 * log_px + log_py))
+        log_py = log_py.cpu().detach().numpy().squeeze()
+        log_px = log_px.cpu().detach().numpy().squeeze()
 
-            nll_px_sum = nll_px_sum + -1.0 * log_px
-            nll_py_sum = nll_py_sum + -1.0 * log_py
-            counter = counter + 1.0
-            y_pred = y_pred.cpu().detach().numpy().squeeze()
+        hyps_name = f"{bidx}-hyps.jpg"
+        print(hyps_name)
+        print("nll_x", str(-1.0 * log_px))
+        print("nll_y", str(-1.0 * log_py))
+        print("nll_(x+y)", str(-1.0 * log_px + log_py))
 
-            testing_sequence = data_test.dataset.scenes[data_test.test_id].sequences[bidx]
-            objects_list = []
-            for k in range(3):
-                objects_list.append(decode_obj(
-                    testing_sequence.objects[k], testing_sequence.id))
-            objects = np.stack(objects_list, axis=0)
-            gt_object = decode_obj(
-                testing_sequence.objects[-1], testing_sequence.id)
-            drawn_img_hyps = draw_hyps(
-                testing_sequence.imgs[-1], y_pred, gt_object, objects, normalize=False)
-            cv2.imwrite(os.path.join(save_path, hyps_name), drawn_img_hyps)
+        nll_px_sum = nll_px_sum + -1.0 * log_px
+        nll_py_sum = nll_py_sum + -1.0 * log_py
+        counter = counter + 1.0
+        y_pred = y_pred.cpu().detach().numpy().squeeze()
 
-            multimod_emd = mmfp_utils.wemd_from_pred_samples(y_pred)
-            multimod_emd_sum += multimod_emd
-            print("multimod_emd", multimod_emd)
+        testing_sequence = data_test.dataset.scenes[data_test.test_id].sequences[bidx]
+        objects_list = []
+        for k in range(3):
+            objects_list.append(decode_obj(
+                testing_sequence.objects[k], testing_sequence.id))
+        objects = np.stack(objects_list, axis=0)
+        gt_object = decode_obj(
+            testing_sequence.objects[-1], testing_sequence.id)
+        drawn_img_hyps = draw_hyps(
+            testing_sequence.imgs[-1], y_pred, gt_object, objects, normalize=False)
+        cv2.imwrite(os.path.join(save_path, hyps_name), drawn_img_hyps)
 
-            _, _, height, width = x.shape
+        multimod_emd = mmfp_utils.wemd_from_pred_samples(y_pred)
+        multimod_emd_sum += multimod_emd
+        print("multimod_emd", multimod_emd)
 
-            (X, Y), (log_px_grid, log_py_grid) = get_grid_logprob(
-                height, width, x, model)
+        _, _, height, width = x.shape
 
-            draw_sdd_heatmap(
-                objects=objects_list,
-                gt_object=gt_object,
-                testing_sequence=testing_sequence,
-                log_px_pred=log_px_grid,
-                X=X, Y=Y,
-                save_path=os.path.join(
-                    save_path, f"{session_id}-{bidx}-heatmap.png")
-            )
+        (X, Y), (log_px_grid, log_py_grid) = get_grid_logprob(
+            height, width, x, model)
 
-            result_row = {
-                "session_id": session_id,
-                "bidx": bidx,
-                "nll_x": float(-1.0 * log_px),
-                "nll_y": float(-1.0 * log_py),
-                "multimod_emd": float(multimod_emd)
-            }
-            results.append(result_row)
+        draw_sdd_heatmap(
+            objects=objects_list,
+            gt_object=gt_object,
+            testing_sequence=testing_sequence,
+            log_px_pred=log_px_grid,
+            X=X, Y=Y,
+            save_path=os.path.join(
+                save_path, f"{session_id}-{bidx}-heatmap.png")
+        )
+
+        result_row = {
+            "session_id": session_id,
+            "bidx": bidx,
+            "nll_x": float(-1.0 * log_px),
+            "nll_y": float(-1.0 * log_py),
+            "multimod_emd": float(multimod_emd)
+        }
+        results.append(result_row)
 
     print("Mean log_p_x: ", nll_px_sum / counter)
     print("Mean log_p_y: ", nll_py_sum / counter)

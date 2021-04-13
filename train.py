@@ -15,7 +15,7 @@ from torch import optim
 from args import get_args
 from torch.backends import cudnn
 from utils import AverageValueMeter, set_random_seed, resume, save
-from dataset_coco import SamplePointData, decode_obj
+from dataset_coco import SamplePointData
 
 from utils import draw_hyps
 
@@ -98,16 +98,37 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
             # if bidx < 2:
             x, y = data
             # x : [args.batch_size, 5, W, H]
-            # y : [args.batch_size, 20, 2]
+            # y : [args.batch_size, 30, 2]
             x = x.float().to(args.gpu)
-            y = y.float().to(args.gpu).unsqueeze(1)
-            # import pdb
-            # pdb.set_trace()
-            y = y.repeat(1, 20, 1)
-            #y += torch.randn(y.shape[0], y.shape[1], y.shape[2]).to(args.gpu)
+            y = y.float().to(args.gpu)
+
             step = bidx + len(train_loader) * epoch
             model.train()
             recon_nats = model(x, y, optimizer, step, None)
+
+            pos = y[0].cpu().detach().numpy().squeeze()
+            pos = (
+                (x[0].shape[1], x[0].shape[2]) * pos).astype(int)
+            img = x[0].cpu().detach().numpy().squeeze().copy()
+            img = np.transpose(img[:3], (1, 2, 0))
+            img = ((img + 1) * 255/2.).astype(np.uint8)
+            img = cv2.UMat(img)
+
+            for i, (posy, posx) in enumerate(pos):
+                if posy < 0 or posy >= x[0].shape[1]:
+                    continue
+                if posx < 0 or posx >= x[0].shape[2]:
+                    continue
+                if i < 30:
+                    cv2.circle(img, (posx, posy), 2, (255, 0, 0), -1)
+                else:
+                    cv2.circle(img, (posx, posy), 2, (0, 0, 255), -1)
+
+            cv2.imshow('test', img)
+            key = cv2.waitKey(1)
+            if key == ord('q'):
+                break
+
             point_nats_avg_meter.update(recon_nats.item())
             if step % args.log_freq == 0:
                 duration = time.time() - start_time
@@ -125,7 +146,7 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
                 x = x.float().to(args.gpu)
                 if args.timeit:
                     t1 = time.time()
-                _, y_pred = model.decode(x, 1000)
+                _, y_pred = model.decode(x, 250)
                 if args.timeit:
                     t2 = time.time()
                     print('inference speed (1/s): ', 1.0/(t2-t1))
@@ -152,8 +173,6 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
                 mean = np.mean(pos_array, axis=0).astype(np.int32)
                 cv2.circle(img, (mean[1], mean[0]), 4, (0, 0, 255), -1)
 
-                # cv2.imshow('test', img)
-                # key = cv2.waitKey(0)
                 epoch_save_dir = os.path.join(
                     save_dir, 'images', 'epoch-' + str(epoch))
                 if not os.path.exists(epoch_save_dir):
@@ -161,6 +180,7 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
 
                 cv2.imwrite(os.path.join(save_dir, 'images',
                                          'epoch-' + str(epoch), str(bidx) + '.jpg'), img)
+
         if (epoch + 1) % args.save_freq == 0:
             save(model, optimizer, epoch + 1,
                  os.path.join(save_dir, 'checkpoint-%d.pt' % epoch))
