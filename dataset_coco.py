@@ -25,7 +25,7 @@ def decode_img(file_path, width=None, height=None):
 # read the float file containing the object information
 
 
-def decode_sample_points(file_path, nr_samples_from_mask=30):
+def decode_sample_points(file_path, nr_samples_from_mask=150):
 
     segim = cv2.imread(file_path)
     h, w, c = segim.shape
@@ -41,6 +41,7 @@ def decode_sample_points(file_path, nr_samples_from_mask=30):
         positives = np.transpose(np.asarray([index_yx[0][sample_index] / float(h),
                                              index_yx[1][sample_index] / float(w)]), (1, 0))
 
+        """
         nr_negatives = 2 * nr_samples_from_mask
         index_yx = np.where(segim != 0)
         sample_index = np.random.choice(
@@ -48,12 +49,13 @@ def decode_sample_points(file_path, nr_samples_from_mask=30):
 
         negatives = np.transpose(np.asarray([index_yx[0][sample_index] / float(h),
                                              index_yx[1][sample_index] / float(w)]), (1, 0))
+        """
 
-        sample_pts = np.vstack([positives, negatives])
+        sample_pts = positives
         gt_label = 1
     else:
         sample_pts = np.vstack([np.asarray([np.random.uniform(0, 1), np.random.uniform(0, 1)])
-                                for i in range(3 * nr_samples_from_mask)])
+                                for i in range(nr_samples_from_mask)])
         gt_label = 0
 
     gt_sample_points = sample_pts.astype(np.float32)
@@ -67,9 +69,9 @@ class DataLoader():
         self.annos = []
         self.split = split
         if self.split == 'train2017':
-            self.sample_no = 5000
+            self.sample_no = 10000
         else:
-            self.sample_no = 200
+            self.sample_no = 250
         self.load_image_paths()
         self.load_anno_paths()
 
@@ -114,7 +116,7 @@ class SamplePointData(Dataset):
         return len(self.dataset.rgbs)
 
     def __getitem__(self, idx):
-        if self.split == 'train':
+        if self.split == 'train2017':
             rand_index = np.random.choice(len(self.dataset.rgbs), 1)[0]
             img_path = self.dataset.rgbs[rand_index]
             anno_path = self.dataset.annos[rand_index]
@@ -136,8 +138,8 @@ class SamplePointData(Dataset):
             if s > 0.5:
                 input = np.flip(input, 2).copy()  # horizontally
                 output[1] = 1.0 - output[1]
-            s = np.random.uniform(0, 1)
             """
+            s = np.random.uniform(0, 1)
             if s > 0.5:
                 input = np.flip(input, 1).copy()  # vertically
                 output[0] = 1.0 - output[0]

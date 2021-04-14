@@ -1,3 +1,8 @@
+from sklearn.mixture import GaussianMixture as GMM
+from PIL import Image
+import io
+import cv2
+import matplotlib.pyplot as plt
 from pprint import pprint
 from sklearn.svm import LinearSVC
 from math import log, pi
@@ -8,12 +13,8 @@ import random
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import cv2
-import io
-from PIL import Image
-from sklearn.mixture import GaussianMixture as GMM
 # from wemd import computeWEMD
+
 
 class AverageValueMeter(object):
     """Computes and stores the average and current value"""
@@ -104,9 +105,9 @@ def standard_laplace_logprob(z):
 
 
 def log_normal_logprob(z, mu, var):
-     log_norm = torch.log(torch.norm(z, dim=2))
-     logz = -1.0 * log(2) - 1.5 * log(2 * pi) - 0.5 * log(var)
-     return logz - 3.0 * log_norm - (log_norm - mu).pow(2) / (2 * var)
+    log_norm = torch.log(torch.norm(z, dim=2))
+    logz = -1.0 * log(2) - 1.5 * log(2 * pi) - 0.5 * log(var)
+    return logz - 3.0 * log_norm - (log_norm - mu).pow(2) / (2 * var)
 
 
 def set_random_seed(seed):
@@ -256,11 +257,14 @@ def validate_conditioned(loader, model, args, max_samples=None, save_dir=None):
     # Compute MMD and CD
     sample_pcs = torch.cat(all_sample, dim=0)
     ref_pcs = torch.cat(all_ref, dim=0)
-    print("[rank %s] Recon Sample size:%s Ref size: %s" % (args.rank, sample_pcs.size(), ref_pcs.size()))
+    print("[rank %s] Recon Sample size:%s Ref size: %s" %
+          (args.rank, sample_pcs.size(), ref_pcs.size()))
 
     if save_dir is not None and args.save_val_results:
-        smp_pcs_save_name = os.path.join(save_dir, "smp_recon_pcls_gpu%s.npy" % args.gpu)
-        ref_pcs_save_name = os.path.join(save_dir, "ref_recon_pcls_gpu%s.npy" % args.gpu)
+        smp_pcs_save_name = os.path.join(
+            save_dir, "smp_recon_pcls_gpu%s.npy" % args.gpu)
+        ref_pcs_save_name = os.path.join(
+            save_dir, "ref_recon_pcls_gpu%s.npy" % args.gpu)
         np.save(smp_pcs_save_name, sample_pcs.cpu().detach().numpy())
         np.save(ref_pcs_save_name, ref_pcs.cpu().detach().numpy())
         print("Saving file:%s %s" % (smp_pcs_save_name, ref_pcs_save_name))
@@ -308,19 +312,23 @@ def validate_sample(loader, model, args, max_samples=None, save_dir=None):
           % (args.rank, sample_pcs.size(), ref_pcs.size()))
 
     if save_dir is not None and args.save_val_results:
-        smp_pcs_save_name = os.path.join(save_dir, "smp_syn_pcls_gpu%s.npy" % args.gpu)
-        ref_pcs_save_name = os.path.join(save_dir, "ref_syn_pcls_gpu%s.npy" % args.gpu)
+        smp_pcs_save_name = os.path.join(
+            save_dir, "smp_syn_pcls_gpu%s.npy" % args.gpu)
+        ref_pcs_save_name = os.path.join(
+            save_dir, "ref_syn_pcls_gpu%s.npy" % args.gpu)
         np.save(smp_pcs_save_name, sample_pcs.cpu().detach().numpy())
         np.save(ref_pcs_save_name, ref_pcs.cpu().detach().numpy())
         print("Saving file:%s %s" % (smp_pcs_save_name, ref_pcs_save_name))
 
-    res = compute_all_metrics(sample_pcs, ref_pcs, args.batch_size, accelerated_cd=True)
+    res = compute_all_metrics(
+        sample_pcs, ref_pcs, args.batch_size, accelerated_cd=True)
     pprint(res)
 
     sample_pcs = sample_pcs.cpu().detach().numpy()
     ref_pcs = ref_pcs.cpu().detach().numpy()
     jsd = JSD(sample_pcs, ref_pcs)
-    jsd = torch.tensor(jsd).cuda() if args.gpu is None else torch.tensor(jsd).cuda(args.gpu)
+    jsd = torch.tensor(jsd).cuda() if args.gpu is None else torch.tensor(
+        jsd).cuda(args.gpu)
     res.update({"JSD": jsd})
     print("JSD     :%s" % jsd)
     return res
@@ -396,7 +404,8 @@ def visualize_2Dimage(image, samples, idx):
     if not isinstance(samples, np.ndarray):
         samples = samples.cpu().detach().numpy()
     generated_image = np.zeros(image.shape)
-    coordinates = np.round(samples[:, 0:2]*np.array([image.shape[0], image.shape[1]]))
+    coordinates = np.round(
+        samples[:, 0:2]*np.array([image.shape[0], image.shape[1]]))
     for i in range(generated_image.shape[0]):
         for j in range(generated_image.shape[1]):
             generated_image[i, j] = samples
@@ -429,7 +438,8 @@ def draw_hyps(img_path, hyps, gt_object, objects, normalize=True, hist_rects_col
         overlay = img.copy()
         cv2.rectangle(overlay, (int(objects[i, 0, 0, 0, 0]), int(objects[i, 0, 0, 1, 0])),
                       (int(objects[i, 0, 0, 2, 0]), int(objects[i, 0, 0, 3, 0])), hist_rects_color, -1)
-        img = cv2.addWeighted(overlay, tranparency[i], img, 1 - tranparency[i], 0)
+        img = cv2.addWeighted(
+            overlay, tranparency[i], img, 1 - tranparency[i], 0)
 
     # draw the ground truth future
     cv2.rectangle(img, (int(gt_object[0, 0, 0, 0]), int(gt_object[0, 0, 1, 0])),
@@ -486,7 +496,8 @@ def draw_sdd_heatmap(
         mycmap._init()
         mycmap._lut[:, -1] = np.clip(np.linspace(0, 1.0, N + 4), 0, 1.0)
         return mycmap
-    img = draw_hyps(testing_sequence.imgs[-1], np.empty((0,2)), gt_object, np.array(objects), normalize=False, hist_rects_color=(255, 0,0), cvt_color=True)
+    img = draw_hyps(testing_sequence.imgs[-1], np.empty((0, 2)), gt_object, np.array(
+        objects), normalize=False, hist_rects_color=(255, 0, 0), cvt_color=True)
 
     Z = log_px_pred.reshape(-1)
     Z = np.exp(Z)
@@ -495,8 +506,8 @@ def draw_sdd_heatmap(
     h, w, _ = img.shape
     plt.figure(figsize=(w // 25, h // 25,))
     plt.imshow(img)
-    plt.contourf(X, Y,Z.reshape(X.shape), vmin=vmin , vmax=vmax, cmap=transparent_cmap(plt.cm.jet), levels=20)
+    plt.contourf(X, Y, Z.reshape(X.shape), vmin=vmin, vmax=vmax,
+                 cmap=transparent_cmap(plt.cm.jet), levels=20)
 
     plt.axis("off")
-    plt.savefig(save_path,format='png', bbox_inches='tight', pad_inches=0 )
-
+    plt.savefig(save_path, format='png', bbox_inches='tight', pad_inches=0)

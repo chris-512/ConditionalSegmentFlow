@@ -146,13 +146,17 @@ class HyperRegression(nn.Module):
             y, target_networks_weights, torch.zeros(batch_size, y.size(1), 1).to(y))
         if self.logprob_type == "Laplace":
             log_py = standard_laplace_logprob(y).view(
-                batch_size, -1, 2)  # .sum(1, keepdim=True)
+                batch_size, -1).sum(1, keepdim=True)
         if self.logprob_type == "Normal":
             log_py = standard_normal_logprob(y).view(
-                batch_size, -1, 2)  # .sum(1, keepdim=True)
-        delta_log_py = delta_log_py.view(batch_size, y.size(1), 1)  # .sum(1)
+                batch_size, -1).sum(1, keepdim=True)
+        delta_log_py = delta_log_py.view(batch_size, y.size(1), 1).sum(1)
 
-        # log_px = log_py - delta_log_py
+        log_px = log_py - delta_log_py
+
+        loss = -log_px.mean()
+
+        """
 
         gt_labels = x[:, 3:5, 0, 0]
         onehot_tensor = torch.eye(2).cuda()
@@ -166,6 +170,7 @@ class HyperRegression(nn.Module):
         print('bg : ', len(bg_indices))
         print('person : ', len(person_indices))
         # person_indices = np.where((gt_labels == (0, 1)).all(axis=1))
+
 
         pos_log_px = log_py[person_indices, :30, :].view(len(person_indices), -1).sum(
             1, keepdim=True) - delta_log_py[person_indices, :30, :].sum(1)
@@ -182,6 +187,7 @@ class HyperRegression(nn.Module):
         else:
             loss = -(pos_log_px + 0.2 * neg_log_px).mean()
             recon = -(pos_log_px + 0.2 * neg_log_px).sum()
+        """
 
         loss.backward()
         opt.step()
@@ -189,7 +195,7 @@ class HyperRegression(nn.Module):
         # loss = loss + bg_loss
         # loss.backward()
 
-        # recon = -(pos_log_px - neg_log_px).sum()
+        recon = -log_px.sum()
         recon_nats = recon / float(y.size(0))
         return recon_nats
 
@@ -225,7 +231,7 @@ class HyperRegression(nn.Module):
                 (z.size(0), num_points, self.input_dim), self.gpu)
         if self.logprob_type == "Normal":
             y = self.sample_gaussian(
-                (z.size(0), num_points, self.input_dim), trucated_std=0.5, gpu=self.gpu)
+                (z.size(0), num_points, self.input_dim), truncate_std=0.2, gpu=self.gpu)
         x = self.point_cnf(y, target_networks_weights,
                            reverse=True).view(*y.size())
         return y, x
@@ -261,13 +267,16 @@ class HyperFlowNetwork(nn.Module):
         self.n_out = 1024
         # self.n_out = 46080
         dims = tuple(map(int, args.dims.split("-")))  # 128-128-128
+        total_output_dims = 0
         for k in range(len(dims)):
             if k == 0:
                 output.append(
                     nn.Linear(self.n_out, args.input_dim * dims[k], bias=True))
+                total_output_dims += args.input_dim * dims[k]
             else:
                 output.append(
                     nn.Linear(self.n_out, dims[k - 1] * dims[k], bias=True))
+                total_output_dims += dims[k - 1] * dims[k]
             # bias
             output.append(nn.Linear(self.n_out, dims[k], bias=True))
             # scaling
@@ -275,6 +284,7 @@ class HyperFlowNetwork(nn.Module):
             output.append(nn.Linear(self.n_out, dims[k], bias=True))
             # shift
             output.append(nn.Linear(self.n_out, dims[k], bias=True))
+            total_output_dims += dims[k] * 4
 
         output.append(
             nn.Linear(self.n_out, dims[-1] * args.input_dim, bias=True))
@@ -285,6 +295,8 @@ class HyperFlowNetwork(nn.Module):
         output.append(nn.Linear(self.n_out, args.input_dim, bias=True))
         # shift
         output.append(nn.Linear(self.n_out, args.input_dim, bias=True))
+        total_output_dims += (dims[-1] * args.input_dim + args.input_dim * 4)
+        print('total output dims of HyperFlowNetwork: ', total_output_dims)
 
         self.output = ListModule(*output)
 
@@ -295,6 +307,7 @@ class HyperFlowNetwork(nn.Module):
         for j, target_network_layer in enumerate(self.output):
             multi_outputs.append(target_network_layer(output))
         multi_outputs = torch.cat(multi_outputs, dim=1)
+        # multi_outputs = nn.Sigmoid()(multi_outputs)  # Add sigmoid
         return multi_outputs
 
 
@@ -345,27 +358,32 @@ class FlowNetS(nn.Module):
 
     def forward(self, x):
         out_conv1 = self.conv1(x)
+        out_conv1 = nn.functional.relu(out_conv1)
+
         out_conv2 = self.conv2(out_conv1)
+        out_conv2 = nn.functional.relu(out_conv2)
+
         out_conv3 = self.conv3_1(self.conv3(out_conv2))
+        out_conv3 = nn.functional.relu(out_conv3)
+
         out_conv4 = self.conv4_1(self.conv4(out_conv3))
+        out_conv4 = nn.functional.relu(out_conv4)
+
         out_conv5 = self.conv5_1(self.conv5(out_conv4))
+        out_conv5 = nn.functional.relu(out_conv5)
+
         out_conv6 = self.conv6_1(self.conv6(out_conv5))
+        out_conv6 = nn.functional.relu(out_conv6)
 
         out_conv8 = self.conv8(self.conv7(out_conv6))  # SDD
-        out_fc1 = nn.functional.relu(
-            self.fc1(out_conv8.view(out_conv6.size(0), -1)))  # SDD
-
-        #         out_fc1 = nn.functional.relu(self.fc1(out_conv6.view(out_conv6.size(0), -1))) # CPI
-
-        # predict = self.predict_6(out_conv8)
-        # out_fc1 = nn.functional.relu(self.fc1(predict.view(predict.size(0), -1)))
+        # [batch_size, 1024, 4, 4]
+        # view(batch_size, -1) -> [batch_size, 1024 * 4 * 4]
+        # out_fc1 = nn.functional.relu(
+        #    self.fc1(out_conv8.view(out_conv6.size(0), -1)))
+        kernel_size = out_conv8.size(2)
+        out_gap = nn.AvgPool2d(kernel_size=kernel_size)(
+            out_conv8).view(out_conv8.size(0), -1)
+        # out_fc1 = [batch_size, 1024]
         # out_fc2 = nn.functional.relu(self.fc2(out_fc1))
-        # out_fc3 = nn.functional.relu(self.fc3(out_fc2))
-        # out_conv7 = self.conv7(out_conv6)
-        # out_conv8 = self.conv8(out_conv7)
-        # out_fc2 = out_conv6.view(out_conv6.size(0), -1)
-        # out_fc2 = self.fc1(out_conv8.view(out_conv8.size(0), -1))
-
-        out_fc2 = nn.functional.relu(self.fc2(out_fc1))
-        # out_fc2 = self.predict_6(out_conv6)
-        return out_fc2
+        # out_fc2 = [batch_size, 1024]
+        return out_gap
