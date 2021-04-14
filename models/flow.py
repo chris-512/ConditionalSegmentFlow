@@ -2,6 +2,8 @@ from .odefunc import ODEfunc, ODEnet, ODEHypernet, ODEhyperfunc, ODEHypernet2D, 
 from .normalization import MovingBatchNorm1d
 from .cnf import CNF, SequentialFlow, CNF2D
 
+import torch.nn as nn
+
 
 def count_nfe(model):
     class AccNumEvals(object):
@@ -65,7 +67,8 @@ def build_model(args, input_dim, hidden_dims, context_dim, num_blocks, condition
     if args.batch_norm:
         bn_layers = [MovingBatchNorm1d(input_dim, bn_lag=args.bn_lag, sync=args.sync_bn)
                      for _ in range(num_blocks)]
-        bn_chain = [MovingBatchNorm1d(input_dim, bn_lag=args.bn_lag, sync=args.sync_bn)]
+        bn_chain = [MovingBatchNorm1d(
+            input_dim, bn_lag=args.bn_lag, sync=args.sync_bn)]
         for a, b in zip(chain, bn_layers):
             bn_chain.append(a)
             bn_chain.append(b)
@@ -103,10 +106,12 @@ def build_hyper(args, num_blocks, conditional):
     if args.batch_norm:
         bn_layers = [MovingBatchNorm1d(args.input_dim, bn_lag=args.bn_lag, sync=args.sync_bn)
                      for _ in range(num_blocks)]
-        bn_chain = [MovingBatchNorm1d(args.input_dim, bn_lag=args.bn_lag, sync=args.sync_bn)]
+        bn_chain = [MovingBatchNorm1d(
+            args.input_dim, bn_lag=args.bn_lag, sync=args.sync_bn)]
         for a, b in zip(chain, bn_layers):
             bn_chain.append(a)
             bn_chain.append(b)
+        # bn_chain.append(nn.Sigmoid())  # Add sigmold layer
         chain = bn_chain
     model = SequentialFlow(chain)
 
@@ -139,7 +144,8 @@ def build_hyper2D(args, num_blocks, conditional):
     if args.batch_norm:
         bn_layers = [MovingBatchNorm1d(args.input_dim, bn_lag=args.bn_lag, sync=args.sync_bn)
                      for _ in range(num_blocks)]
-        bn_chain = [MovingBatchNorm1d(args.input_dim, bn_lag=args.bn_lag, sync=args.sync_bn)]
+        bn_chain = [MovingBatchNorm1d(
+            args.input_dim, bn_lag=args.bn_lag, sync=args.sync_bn)]
         for a, b in zip(chain, bn_layers):
             bn_chain.append(a)
             bn_chain.append(b)
@@ -151,21 +157,26 @@ def build_hyper2D(args, num_blocks, conditional):
 
 def get_point_cnf(args):
     dims = tuple(map(int, args.dims.split("-")))
-    model = build_model(args, args.input_dim, dims, args.zdim, args.num_blocks, True).cuda()
-    print("Number of trainable parameters of Point CNF: {}".format(count_parameters(model)))
+    model = build_model(args, args.input_dim, dims,
+                        args.zdim, args.num_blocks, True).cuda()
+    print("Number of trainable parameters of Point CNF: {}".format(
+        count_parameters(model)))
     return model
 
 
 def get_latent_cnf(args):
     dims = tuple(map(int, args.latent_dims.split("-")))
-    model = build_model(args, args.zdim, dims, 0, args.latent_num_blocks, False).cuda()
-    print("Number of trainable parameters of Latent CNF: {}".format(count_parameters(model)))
+    model = build_model(args, args.zdim, dims, 0,
+                        args.latent_num_blocks, False).cuda()
+    print("Number of trainable parameters of Latent CNF: {}".format(
+        count_parameters(model)))
     return model
 
 
 def get_hyper_cnf(args):
     model = build_hyper(args, args.num_blocks, True).cuda()
     return model
+
 
 def get_hyper_cnf2D(args):
     model = build_hyper2D(args, args.num_blocks, True).cuda()
