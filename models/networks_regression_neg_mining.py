@@ -7,7 +7,7 @@ from models.flow import get_hyper_cnf
 from utils import truncated_normal, standard_normal_logprob, standard_laplace_logprob
 from torch.nn import init
 from torch.distributions.laplace import Laplace
-from torchvision.models.resnet import resnet50
+
 
 def conv(batchNorm, in_planes, out_planes, kernel_size=3, stride=1, padding=None):
     if padding is None:
@@ -113,14 +113,13 @@ class ListModule(nn.Module):
 class HyperRegression(nn.Module):
     def __init__(self, args, input_width=320, input_height=576):
         super(HyperRegression, self).__init__()
-        self.args = args
         self.input_dim = args.input_dim
         self.hyper = HyperFlowNetwork(
             args, input_height=input_height, input_width=input_width)
-        self.point_cnf = get_hyper_cnf(args)
+        self.args = args
+        self.point_cnf = get_hyper_cnf(self.args)
         self.gpu = args.gpu
         self.logprob_type = args.logprob_type
-        self.ce_loss = nn.CrossEntropyLoss()
 
     def make_optimizer(self, args):
         def _get_opt_(params):
@@ -137,43 +136,60 @@ class HyperRegression(nn.Module):
                         list(self.point_cnf.parameters()))
         return opt
 
-    def forward(self, x, y, class_cond, opt, step, writer=None):
+    def forward(self, x, y, opt, step, writer=None):
         opt.zero_grad()
         batch_size = x.size(0)
-        target_networks_weights, pred_class_outputs = self.hyper(x)
+        target_networks_weights = self.hyper(x)
 
-        class_cond = class_cond.cuda()
-        # print(target_networks_weights.shape)
-        # print(class_cond.shape)
-        conditional = torch.cat((target_networks_weights, class_cond), 1)
-
-        # Normalizing Flow Loss
+        # Loss
         y, delta_log_py = self.point_cnf(
-            y, conditional, torch.zeros(batch_size, y.size(1), 1).to(y))
+            y, target_networks_weights, torch.zeros(batch_size, y.size(1), 1).to(y))
         if self.logprob_type == "Laplace":
             log_py = standard_laplace_logprob(y).view(
-                batch_size, -1).sum(1, keepdim=True)
+                batch_size, -1, 2)  # .sum(1, keepdim=True)
         if self.logprob_type == "Normal":
             log_py = standard_normal_logprob(y).view(
-                batch_size, -1).sum(1, keepdim=True)
-        delta_log_py = delta_log_py.view(batch_size, y.size(1), 1).sum(1)
+                batch_size, -1, 2)  # .sum(1, keepdim=True)
+        delta_log_py = delta_log_py.view(batch_size, y.size(1), 1)  # .sum(1)
 
-        log_px = log_py - delta_log_py
+        # log_px = log_py - delta_log_py
 
-        loss = -log_px.mean()
+        gt_labels = x[:, 3:5, 0, 0]
+        onehot_tensor = torch.eye(2).cuda()
+        bg_onehot = onehot_tensor[0]  # background
+        person_onehot = onehot_tensor[1]  # person
+        # bg_indices = np.where((gt_labels == (1, 0)).all(axis=1))
+        bg_indices = (gt_labels == bg_onehot)[
+            :, 0].nonzero(as_tuple=True)[0]
+        person_indices = (gt_labels == person_onehot)[
+            :, 0].nonzero(as_tuple=True)[0]
+        print('bg : ', len(bg_indices))
+        print('person : ', len(person_indices))
+        # person_indices = np.where((gt_labels == (0, 1)).all(axis=1))
 
-        # Cross Entropy Loss
-        # ex) num_classes = 80
-        # background + classes = 81 classes (index: 0 ~ 80)
-        # target_class_ind = (class_cond == 1).nonzero()[:, 1]
-        # multi_ce_loss = self.ce_loss(pred_class_outputs, target_class_ind)
+        pos_log_px = log_py[person_indices, :30, :].view(len(person_indices), -1).sum(
+            1, keepdim=True) - delta_log_py[person_indices, :30, :].sum(1)
+        neg_log_px = log_py[person_indices, 30:, :].view(len(
+            person_indices), -1).sum(1, keepdim=True) - delta_log_py[person_indices, 30:, :].sum(1)
 
-        # loss += multi_ce_loss
+        if len(bg_indices) != 0:
+            bg_log_px = log_py[bg_indices, :90, :].view(len(bg_indices), -1).sum(
+                1, keepdim=True) - delta_log_py[bg_indices, :90, :].sum(1)
+
+            loss = -(pos_log_px - 1.0/3 * neg_log_px).mean() - \
+                (bg_log_px).mean()
+            recon = -(pos_log_px - 1.0/3 * neg_log_px).sum() - bg_log_px.sum()
+        else:
+            loss = -(pos_log_px - 1.0/3 * neg_log_px).mean()
+            recon = -(pos_log_px - 1.0/3 * neg_log_px).sum()
 
         loss.backward()
         opt.step()
 
-        recon = -log_px.sum()
+        # loss = loss + bg_loss
+        # loss.backward()
+
+        # recon = -(pos_log_px - neg_log_px).sum()
         recon_nats = recon / float(y.size(0))
         return recon_nats
 
@@ -201,25 +217,22 @@ class HyperRegression(nn.Module):
         y = y if gpu is None else y.cuda(gpu)
         return y
 
-    def decode(self, z, class_cond, num_points):
+    def decode(self, z, num_points):
         # transform points from the prior to a point cloud, conditioned on a shape code
-        target_networks_weights, _ = self.hyper(z)
-        class_cond = class_cond.cuda()
-        conditional = torch.cat((target_networks_weights, class_cond), 1)
-
+        target_networks_weights = self.hyper(z)
         if self.logprob_type == "Laplace":
             y = self.sample_laplace(
                 (z.size(0), num_points, self.input_dim), self.gpu)
         if self.logprob_type == "Normal":
             y = self.sample_gaussian(
-                (z.size(0), num_points, self.input_dim), None, self.gpu)
-        x = self.point_cnf(y, conditional,
+                (z.size(0), num_points, self.input_dim), trucated_std=0.5, gpu=self.gpu)
+        x = self.point_cnf(y, target_networks_weights,
                            reverse=True).view(*y.size())
         return y, x
 
     def get_logprob(self, x, y_in):
         batch_size = x.size(0)
-        target_networks_weights, _ = self.hyper(x)
+        target_networks_weights = self.hyper(x)
 
         # Loss
         y, delta_log_py = self.point_cnf(y_in, target_networks_weights, torch.zeros(
@@ -242,25 +255,19 @@ class HyperFlowNetwork(nn.Module):
     def __init__(self, args, input_width=320, input_height=576):
         super().__init__()
 
-        #self.encoder = FlowNetS(input_width=input_width,
-        #                        input_height=input_height, input_channels=args.input_channels)
-
-        self.encoder = ResNet50(input_width=input_width, input_height=input_height)
+        self.encoder = FlowNetS(input_width=input_width,
+                                input_height=input_height, input_channels=args.input_channels)
         output = []
         self.n_out = 1024
-
         # self.n_out = 46080
         dims = tuple(map(int, args.dims.split("-")))  # 128-128-128
-        total_output_dims = 0
         for k in range(len(dims)):
             if k == 0:
                 output.append(
                     nn.Linear(self.n_out, args.input_dim * dims[k], bias=True))
-                total_output_dims += args.input_dim * dims[k]
             else:
                 output.append(
                     nn.Linear(self.n_out, dims[k - 1] * dims[k], bias=True))
-                total_output_dims += dims[k - 1] * dims[k]
             # bias
             output.append(nn.Linear(self.n_out, dims[k], bias=True))
             # scaling
@@ -268,7 +275,6 @@ class HyperFlowNetwork(nn.Module):
             output.append(nn.Linear(self.n_out, dims[k], bias=True))
             # shift
             output.append(nn.Linear(self.n_out, dims[k], bias=True))
-            total_output_dims += dims[k] * 4
 
         output.append(
             nn.Linear(self.n_out, dims[-1] * args.input_dim, bias=True))
@@ -280,23 +286,16 @@ class HyperFlowNetwork(nn.Module):
         # shift
         output.append(nn.Linear(self.n_out, args.input_dim, bias=True))
 
-        total_output_dims += (dims[-1] * args.input_dim + args.input_dim * 4)
-        print('Output dims of HyperFlowNetwork: ', total_output_dims)
-
         self.output = ListModule(*output)
 
-        self.fc = nn.Linear(self.n_out, args.num_classes + 1, bias=True)
-
     def forward(self, x):
-        encoder_outputs = self.encoder(x)
+        output = self.encoder(x)
         # output = output.view(output.size(0), -1)
         multi_outputs = []
         for j, target_network_layer in enumerate(self.output):
-            multi_outputs.append(target_network_layer(encoder_outputs))
+            multi_outputs.append(target_network_layer(output))
         multi_outputs = torch.cat(multi_outputs, dim=1)
-        class_outputs = self.fc(encoder_outputs)
-        # multi_outputs = nn.Sigmoid()(multi_outputs)  # Add sigmoid
-        return encoder_outputs, class_outputs
+        return multi_outputs
 
 
 class FlowNetS(nn.Module):
@@ -351,28 +350,22 @@ class FlowNetS(nn.Module):
         out_conv4 = self.conv4_1(self.conv4(out_conv3))
         out_conv5 = self.conv5_1(self.conv5(out_conv4))
         out_conv6 = self.conv6_1(self.conv6(out_conv5))
+
         out_conv8 = self.conv8(self.conv7(out_conv6))  # SDD
-        # [batch_size, 1024, 4, 4]
-        # view(batch_size, -1) -> [batch_size, 1024 * 4 * 4]
-        # out_fc1 = nn.functional.relu(
-        #    self.fc1(out_conv8.view(out_conv6.size(0), -1)))
-        kernel_size = out_conv8.size(2)
-        out_gap = nn.AvgPool2d(kernel_size=kernel_size)(
-            out_conv8).view(out_conv8.size(0), -1)
-        # out_fc1 = [batch_size, 1024]
+        out_fc1 = nn.functional.relu(
+            self.fc1(out_conv8.view(out_conv6.size(0), -1)))  # SDD
+
+        #         out_fc1 = nn.functional.relu(self.fc1(out_conv6.view(out_conv6.size(0), -1))) # CPI
+
+        # predict = self.predict_6(out_conv8)
+        # out_fc1 = nn.functional.relu(self.fc1(predict.view(predict.size(0), -1)))
         # out_fc2 = nn.functional.relu(self.fc2(out_fc1))
-        # out_fc2 = [batch_size, 1024]
-        out_gap = nn.functional.relu(out_gap)
-        return out_gap
+        # out_fc3 = nn.functional.relu(self.fc3(out_fc2))
+        # out_conv7 = self.conv7(out_conv6)
+        # out_conv8 = self.conv8(out_conv7)
+        # out_fc2 = out_conv6.view(out_conv6.size(0), -1)
+        # out_fc2 = self.fc1(out_conv8.view(out_conv8.size(0), -1))
 
-class ResNet50(nn.Module):
-    def __init__(self, input_width=224, input_height=224):
-        super(ResNet50, self).__init__()
-
-        self.net = resnet50(pretrained=True)
-        num_features = self.net.fc.in_features 
-        self.net.fc = nn.Linear(num_features, 1024)
-        self.net = self.net.cuda()
-
-    def forward(self, x):
-        return self.net(x)
+        out_fc2 = nn.functional.relu(self.fc2(out_fc1))
+        # out_fc2 = self.predict_6(out_conv6)
+        return out_fc2

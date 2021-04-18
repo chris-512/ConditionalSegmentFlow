@@ -83,6 +83,8 @@ def add_args(parser):
                         help='Learning rate exponential decay frequency')
     parser.add_argument('--image_size', type=str, default="28x28",
                         help='Size of input image')
+    parser.add_argument('--num_classes', type=int, default=80,
+                        help='Number of classes')
     # data options
 
     parser.add_argument('--data_dir', type=str,

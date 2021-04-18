@@ -21,7 +21,6 @@ from utils import draw_hyps
 
 faulthandler.enable()
 
-
 def main_worker(gpu, save_dir, ngpus_per_node, args):
     # basic setup
     cudnn.benchmark = True
@@ -69,21 +68,22 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
     entropy_avg_meter = AverageValueMeter()
     latent_nats_avg_meter = AverageValueMeter()
     point_nats_avg_meter = AverageValueMeter()
+    multi_ce_loss_avg_meter = AverageValueMeter()
     if args.distributed:
         print("[Rank %d] World size : %d" % (args.rank, dist.get_world_size()))
 
     # initialize datasets and loaders
 
     print("Start epoch: %d End epoch: %d" % (start_epoch, args.epochs))
-    train_set = SamplePointData(
+    train_set = SamplePointData(args,
         split='train2017', root=args.data_dir, width=256, height=256)
     train_loader = torch.utils.data.DataLoader(
         dataset=train_set, batch_size=args.batch_size, shuffle=True,
         num_workers=0, pin_memory=True)
-    test_set = SamplePointData(
-        split='val2017', root=args.data_dir, width=256, height=256)
+    test_set = SamplePointData(args,
+        split='train2017', root=args.data_dir, width=256, height=256)
     test_loader = torch.utils.data.DataLoader(
-        dataset=test_set, batch_size=1, shuffle=False,
+        dataset=test_set, batch_size=1, shuffle=True,
         num_workers=0, pin_memory=True)
 
     # train iteration
@@ -94,42 +94,43 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
 
         # train for one epoch
         print("Epoch starts:")
-        for bidx, data in enumerate(train_loader):
-            # if bidx < 2:
-            x, y = data
+        for bidx, (input_tensor, points_label, class_condition, class_label) in enumerate(train_loader):
             # x : [args.batch_size, 5, W, H]
-            # y : [args.batch_size, 30, 2]
-            x = x.float().to(args.gpu)
-            y = y.float().to(args.gpu)
+            # y : [args.batch_size, 30, 2]s
+            input_tensor = input_tensor.float().to(args.gpu)
+            points_label = points_label.float().to(args.gpu)
 
             step = bidx + len(train_loader) * epoch
             model.train()
-            recon_nats = model(x, y, optimizer, step, None)
+            recon_nats = model(input_tensor, points_label, class_condition, optimizer, step, None)
 
-            pos = y[0].cpu().detach().numpy().squeeze()
-            pos = (
-                (x[0].shape[1], x[0].shape[2]) * pos).astype(int)
-            img = x[0].cpu().detach().numpy().squeeze().copy()
-            img = np.transpose(img[:3], (1, 2, 0))
-            img = ((img + 1) * 255/2.).astype(np.uint8)
-            img = cv2.UMat(img)
+            # first sample from batch
+            points = points_label[0].cpu().detach().numpy().squeeze()
+            points = (
+                (input_tensor[0].shape[1], input_tensor[0].shape[2]) * points).astype(int)
 
-            for i, (posy, posx) in enumerate(pos):
-                if posy < 0 or posy >= x[0].shape[1]:
+            # first sample from batch
+            inp_tensor = input_tensor[0].cpu().detach().numpy().squeeze().copy()
+            rgb_image = np.transpose(inp_tensor[:3], (1, 2, 0))
+            rgb_image = ((rgb_image + 1) * 255/2.).astype(np.uint8)
+            rgb_image = cv2.UMat(rgb_image)
+
+            for i, (y, x) in enumerate(points):
+                if y < 0 or y >= input_tensor[0].shape[1]:
                     continue
-                if posx < 0 or posx >= x[0].shape[2]:
+                if x < 0 or x >= input_tensor[0].shape[2]:
                     continue
-                if i < 30:
-                    cv2.circle(img, (posx, posy), 2, (255, 0, 0), -1)
-                else:
-                    cv2.circle(img, (posx, posy), 2, (0, 0, 255), -1)
+                cv2.circle(rgb_image, (x, y), 2, (0, 255, 0), -1)
 
-            cv2.imshow('test', img)
+            print(class_label[0])
+
+            cv2.imshow('test', rgb_image)
             key = cv2.waitKey(1)
             if key == ord('q'):
                 break
 
             point_nats_avg_meter.update(recon_nats.item())
+            # multi_ce_loss_avg_meter.update(ce_loss)
             if step % args.log_freq == 0:
                 duration = time.time() - start_time
                 start_time = time.time()
@@ -141,45 +142,44 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
         if (epoch + 1) % args.viz_freq == 0:
             # reconstructions
             model.eval()
-            for bidx, data in enumerate(test_loader):
-                x, _ = data
-                x = x.float().to(args.gpu)
+            for bidx, (input_tensor, points_label, class_condition, class_label) in enumerate(test_loader):
+                input_tensor = input_tensor.float().to(args.gpu)
                 if args.timeit:
                     t1 = time.time()
-                _, y_pred = model.decode(x, 250)
+                _, estimated_points = model.decode(input_tensor, class_condition, 250)
                 if args.timeit:
                     t2 = time.time()
                     print('inference speed (1/s): ', 1.0/(t2-t1))
-                y_pred = y_pred.cpu().detach().numpy().squeeze()
-                y_pred_scaled = (
-                    (x[0].shape[1], x[0].shape[2]) * y_pred).astype(int)
-                img = x.cpu().detach().numpy().squeeze().copy()
-                img = np.transpose(img[:3], (1, 2, 0))
-                img = ((img + 1) * 255/2.).astype(np.uint8)
-                img = cv2.UMat(img)
+                estimated_points = estimated_points.cpu().detach().numpy().squeeze()
+                estimated_points_scaled = (
+                    (input_tensor[0].shape[1], input_tensor[0].shape[2]) * estimated_points).astype(int)
+                inp_tensor = input_tensor.cpu().detach().numpy().squeeze().copy()
+                rgb_image = np.transpose(inp_tensor[:3], (1, 2, 0))
+                rgb_image = ((rgb_image + 1) * 255/2.).astype(np.uint8)
+                rgb_image = cv2.UMat(rgb_image)
 
                 pos_list = []
-                for (posy, posx) in y_pred_scaled:
-                    if posy < 0 or posy >= x[0].shape[1]:
+                for (posy, posx) in estimated_points_scaled:
+                    if posy < 0 or posy >= input_tensor[0].shape[1]:
                         continue
-                    if posx < 0 or posx >= x[0].shape[2]:
+                    if posx < 0 or posx >= input_tensor[0].shape[2]:
                         continue
-                    # import pdb
-                    # pdb.set_trace()
                     pos_list.append((posy, posx))
-                    cv2.circle(img, (posx, posy), 2, (0, 255, 0), -1)
+                    cv2.circle(rgb_image, (posx, posy), 2, (0, 255, 0), -1)
 
                 pos_array = np.array(pos_list)
                 mean = np.mean(pos_array, axis=0).astype(np.int32)
-                cv2.circle(img, (mean[1], mean[0]), 4, (0, 0, 255), -1)
+                cv2.putText(rgb_image, class_label[0], (mean[1]-20, mean[0]-5), cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 2, cv2.LINE_AA)
+                cv2.circle(rgb_image, (mean[1], mean[0]), 4, (255, 0, 0), -1)
 
                 epoch_save_dir = os.path.join(
                     save_dir, 'images', 'epoch-' + str(epoch))
+
                 if not os.path.exists(epoch_save_dir):
                     os.makedirs(epoch_save_dir)
 
                 cv2.imwrite(os.path.join(save_dir, 'images',
-                                         'epoch-' + str(epoch), str(bidx) + '.jpg'), img)
+                                         'epoch-' + str(epoch), str(bidx) + '.jpg'), rgb_image)
 
         if (epoch + 1) % args.save_freq == 0:
             save(model, optimizer, epoch + 1,
