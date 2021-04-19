@@ -12,7 +12,8 @@ import torch.distributed as dist
 import random
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')
+matplotlib.use('TkAgg')
 # from wemd import computeWEMD
 
 
@@ -428,7 +429,7 @@ def visualize_2Dimage(image, samples, idx):
     return res
 
 
-def draw_hyps(img_path, hyps, gt_object, objects, normalize=True, hist_rects_color=(0, 0, 255), cvt_color: bool = False):
+def draw_hyps_bak(img_path, hyps, gt_object, objects, normalize=True, hist_rects_color=(0, 0, 255), cvt_color: bool = False):
     img = cv2.imread(img_path)
     if cvt_color:
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -469,6 +470,26 @@ def draw_hyps(img_path, hyps, gt_object, objects, normalize=True, hist_rects_col
     return img
 
 
+def draw_hyps(img_path, hyps, gt_object, objects, normalize=True, hist_rects_color=(0, 0, 255), cvt_color: bool = False):
+    img = cv2.imread(img_path)
+    if cvt_color:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    for k in range(hyps.shape[0]):
+        if normalize:
+            x1 = int(img.shape[1] * hyps[k, 0])
+            y1 = int(img.shape[0] * hyps[k, 1])
+        else:
+            x1 = int(hyps[k, 0])
+            y1 = int(hyps[k, 1])
+        color = (0, 255, 0)
+        x2 = int(x1 + gt_width)
+        y2 = int(y1 + gt_height)
+        cv2.rectangle(img, (x1, y1), (x2, y2), color, -1)
+
+    return img
+
+
 def draw_ngsim_plots(hist, y_gt, y_pred, op_mask, dir):
     hist_np = hist.cpu().detach().numpy()
     y_gt = y_gt.cpu().detach().numpy()
@@ -482,32 +503,33 @@ def draw_ngsim_plots(hist, y_gt, y_pred, op_mask, dir):
         plt.close()
 
 
-def draw_sdd_heatmap(
-        objects,
-        gt_object,
-        testing_sequence,
-        log_px_pred,
-        X, Y,
-        save_path
-):
+def draw_sdd_heatmap(img,
+                     log_px_pred,
+                     X, Y,
+                     save_path
+                     ):
     def transparent_cmap(cmap, N=255):
         "Copy colormap and set alpha values"
         mycmap = cmap
         mycmap._init()
         mycmap._lut[:, -1] = np.clip(np.linspace(0, 1.0, N + 4), 0, 1.0)
         return mycmap
-    img = draw_hyps(testing_sequence.imgs[-1], np.empty((0, 2)), gt_object, np.array(
-        objects), normalize=False, hist_rects_color=(255, 0, 0), cvt_color=True)
+    # img = draw_hyps(testing_sequence.imgs[-1], np.empty((0, 2)), gt_object, np.array(
+    #    objects), normalize=False, hist_rects_color=(255, 0, 0), cvt_color=True)
 
     Z = log_px_pred.reshape(-1)
     Z = np.exp(Z)
     vmax = np.max(Z)
     vmin = np.min(Z)
+    #import pdb
+    # pdb.set_trace()
     h, w, _ = img.shape
     plt.figure(figsize=(w // 25, h // 25,))
-    plt.imshow(img)
+    # plt.imshow(img)
     plt.contourf(X, Y, Z.reshape(X.shape), vmin=vmin, vmax=vmax,
-                 cmap=transparent_cmap(plt.cm.jet), levels=20)
+                 cmap=plt.cm.jet, levels=20)  # transparent_cmap(plt.cm.jet)
 
     plt.axis("off")
     plt.savefig(save_path, format='png', bbox_inches='tight', pad_inches=0)
+    # plt.title("test")
+    # plt.show(block=False)

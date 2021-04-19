@@ -1,3 +1,4 @@
+from utils import draw_hyps, draw_sdd_heatmap
 import sys
 import os
 import torch
@@ -17,9 +18,28 @@ from torch.backends import cudnn
 from utils import AverageValueMeter, set_random_seed, resume, save
 from dataset_coco import SamplePointData
 
+import mmfp_utils
 from utils import draw_hyps
 
 faulthandler.enable()
+
+
+def get_grid_logprob(args,
+                     height, width, x, model, class_cond
+                     ):
+    #x_sp = np.linspace(0, width - 1, width // 1)
+    #y = np.linspace(0, height - 1, height // 1)
+    x_sp = np.linspace(0, 1, 50)
+    y = np.linspace(0, 1, 50)
+    X, Y = np.meshgrid(x_sp, y)
+    XY = np.array([X.ravel(), Y.ravel()]).T
+    _, _, (log_py_grid, log_px_grid) = model.get_logprob(
+        x,
+        torch.tensor(XY, dtype=torch.float32).unsqueeze(
+            0).to(args.gpu), class_cond
+    )
+    return (X, Y), (log_px_grid.detach().cpu().numpy(), log_py_grid.detach().cpu().numpy())
+
 
 def main_worker(gpu, save_dir, ngpus_per_node, args):
     # basic setup
@@ -76,12 +96,12 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
 
     print("Start epoch: %d End epoch: %d" % (start_epoch, args.epochs))
     train_set = SamplePointData(args,
-        split='train2017', root=args.data_dir, width=256, height=256)
+                                split='train2017', root=args.data_dir, width=256, height=256)
     train_loader = torch.utils.data.DataLoader(
         dataset=train_set, batch_size=args.batch_size, shuffle=True,
         num_workers=0, pin_memory=True)
     test_set = SamplePointData(args,
-        split='train2017', root=args.data_dir, width=256, height=256)
+                               split='val2017', root=args.data_dir, width=256, height=256)
     test_loader = torch.utils.data.DataLoader(
         dataset=test_set, batch_size=1, shuffle=True,
         num_workers=0, pin_memory=True)
@@ -102,7 +122,8 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
 
             step = bidx + len(train_loader) * epoch
             model.train()
-            recon_nats = model(input_tensor, points_label, class_condition, optimizer, step, None)
+            recon_nats = model(input_tensor, points_label,
+                               class_condition, optimizer, step, None)
 
             # first sample from batch
             points = points_label[0].cpu().detach().numpy().squeeze()
@@ -110,7 +131,8 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
                 (input_tensor[0].shape[1], input_tensor[0].shape[2]) * points).astype(int)
 
             # first sample from batch
-            inp_tensor = input_tensor[0].cpu().detach().numpy().squeeze().copy()
+            inp_tensor = input_tensor[0].cpu(
+            ).detach().numpy().squeeze().copy()
             rgb_image = np.transpose(inp_tensor[:3], (1, 2, 0))
             rgb_image = ((rgb_image + 1) * 255/2.).astype(np.uint8)
             rgb_image = cv2.UMat(rgb_image)
@@ -144,18 +166,22 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
             model.eval()
             for bidx, (input_tensor, points_label, class_condition, class_label) in enumerate(test_loader):
                 input_tensor = input_tensor.float().to(args.gpu)
+                points_label = points_label.float().to(args.gpu)
                 if args.timeit:
                     t1 = time.time()
-                _, estimated_points = model.decode(input_tensor, class_condition, 250)
+                _, estimated_points = model.decode(
+                    input_tensor, class_condition, 250)
                 if args.timeit:
                     t2 = time.time()
                     print('inference speed (1/s): ', 1.0/(t2-t1))
+                estimated_points = torch.log(estimated_points) + 0.5
                 estimated_points = estimated_points.cpu().detach().numpy().squeeze()
                 estimated_points_scaled = (
                     (input_tensor[0].shape[1], input_tensor[0].shape[2]) * estimated_points).astype(int)
                 inp_tensor = input_tensor.cpu().detach().numpy().squeeze().copy()
                 rgb_image = np.transpose(inp_tensor[:3], (1, 2, 0))
                 rgb_image = ((rgb_image + 1) * 255/2.).astype(np.uint8)
+                rgb_heatmap_img = rgb_image.copy()
                 rgb_image = cv2.UMat(rgb_image)
 
                 pos_list = []
@@ -169,7 +195,8 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
 
                 pos_array = np.array(pos_list)
                 mean = np.mean(pos_array, axis=0).astype(np.int32)
-                cv2.putText(rgb_image, class_label[0], (mean[1]-20, mean[0]-5), cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 2, cv2.LINE_AA)
+                cv2.putText(rgb_image, class_label[0], (
+                    mean[1]-20, mean[0]-5), cv2.FONT_HERSHEY_PLAIN, 1, (255, 0, 0), 2, cv2.LINE_AA)
                 cv2.circle(rgb_image, (mean[1], mean[0]), 4, (255, 0, 0), -1)
 
                 epoch_save_dir = os.path.join(
@@ -178,8 +205,44 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
                 if not os.path.exists(epoch_save_dir):
                     os.makedirs(epoch_save_dir)
 
-                cv2.imwrite(os.path.join(save_dir, 'images',
-                                         'epoch-' + str(epoch), str(bidx) + '.jpg'), rgb_image)
+                save_path = os.path.join(save_dir, 'images',
+                                         'epoch-' + str(epoch))
+                cv2.imwrite(os.path.join(
+                    save_path, str(bidx) + '.jpg'), rgb_image)
+
+                # calculate log probability
+                log_py, log_px, (log_py_grid, log_px_grid) = model.get_logprob(
+                    input_tensor, points_label, class_condition)
+
+                log_py = log_py.cpu().detach().numpy().squeeze()
+                log_px = log_px.cpu().detach().numpy().squeeze()
+
+                hyps_name = f"{bidx}-hyps.jpg"
+                print(hyps_name)
+                print("nll_x", str(-1.0 * log_px))
+                print("nll_y", str(-1.0 * log_py))
+                print("nll_(x+y)", str(-1.0 * (log_px + log_py)))
+
+                #nll_px_sum = nll_px_sum + -1.0 * log_px
+                #nll_py_sum = nll_py_sum + -1.0 * log_py
+                #counter = counter + 1.0
+
+                # multimod_emd = mmfp_utils.wemd_from_pred_samples(
+                #    estimated_points)
+                #multimod_emd_sum += multimod_emd
+                #print("multimod_emd", multimod_emd)
+
+                _, _, height, width = input_tensor.shape
+
+                (X, Y), (log_px_grid, log_py_grid) = get_grid_logprob(args,
+                                                                      height, width, input_tensor, model, class_condition)
+
+                draw_sdd_heatmap(rgb_heatmap_img,
+                                 log_px_pred=log_px_grid,
+                                 X=X, Y=Y,
+                                 save_path=os.path.join(
+                                     save_path, f"{bidx}-heatmap.png")
+                                 )
 
         if (epoch + 1) % args.save_freq == 0:
             save(model, optimizer, epoch + 1,

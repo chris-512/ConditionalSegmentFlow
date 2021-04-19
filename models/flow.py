@@ -111,7 +111,6 @@ def build_hyper(args, num_blocks, conditional):
         for a, b in zip(chain, bn_layers):
             bn_chain.append(a)
             bn_chain.append(b)
-        # bn_chain.append(nn.Sigmoid())  # Add sigmold layer
         chain = bn_chain
     model = SequentialFlow(chain)
 
