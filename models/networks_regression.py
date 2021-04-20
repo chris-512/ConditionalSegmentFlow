@@ -143,17 +143,15 @@ class HyperRegression(nn.Module):
     def forward(self, x, y, class_cond, opt, step, writer=None):
         opt.zero_grad()
         batch_size = x.size(0)
-        target_networks_weights, pred_class_outputs = self.hyper(x)
-
         class_cond = class_cond.cuda()
+        target_networks_weights = self.hyper(x, class_cond)
         # print(target_networks_weights.shape)
         # print(class_cond.shape)
-        conditional = torch.cat((target_networks_weights, class_cond), 1)
 
         # Normalizing Flow Loss
-        y = torch.exp(y-0.5)
+        # y = torch.exp(y-0.5)
         y, delta_log_py = self.point_cnf(
-            y, conditional, torch.zeros(batch_size, y.size(1), 1).to(y))
+            y, target_networks_weights, torch.zeros(batch_size, y.size(1), 1).to(y))
         if self.logprob_type == "Laplace":
             log_py = standard_laplace_logprob(y).view(
                 batch_size, -1).sum(1, keepdim=True)
@@ -207,28 +205,30 @@ class HyperRegression(nn.Module):
 
     def decode(self, z, class_cond, num_points):
         # transform points from the prior to a point cloud, conditioned on a shape code
-        target_networks_weights, _ = self.hyper(z)
         class_cond = class_cond.cuda()
-        conditional = torch.cat((target_networks_weights, class_cond), 1)
+        target_networks_weights = self.hyper(z, class_cond)
 
         if self.logprob_type == "Laplace":
             y = self.sample_laplace(
                 (z.size(0), num_points, self.input_dim), self.gpu)
         if self.logprob_type == "Normal":
             y = self.sample_gaussian(
-                (z.size(0), num_points, self.input_dim), 0.2, self.gpu)
-        x = self.point_cnf(y, conditional,
+                (z.size(0), num_points, self.input_dim), None, self.gpu)
+        x = self.point_cnf(y, target_networks_weights,
                            reverse=True).view(*y.size())
         return y, x
 
-    def get_logprob(self, x, y_in, class_cond):
+    def get_logprob(self, x, y_in, class_conditional):
         batch_size = x.size(0)
-        target_networks_weights, _ = self.hyper(x)
-        class_cond = class_cond.cuda()
-        conditional = torch.cat((target_networks_weights, class_cond), 1)
+        class_conditional = class_conditional.cuda()
+        target_networks_weights = self.hyper(x, class_conditional)
+        # 2*128 + 128 + 128 + 128 + 128
+        # 128*2 + 2 + 2 + 2 + 2
+        # + 81
+        # = 1131
 
         # Loss
-        y, delta_log_py = self.point_cnf(y_in, conditional, torch.zeros(
+        y, delta_log_py = self.point_cnf(y_in, target_networks_weights, torch.zeros(
             batch_size, y_in.size(1), 1).to(y_in))
         if self.logprob_type == "Laplace":
             log_py = standard_laplace_logprob(y)
@@ -254,7 +254,7 @@ class HyperFlowNetwork(nn.Module):
         self.encoder = ResNet101FPN(input_width=input_width,
                                     input_height=input_height)
         output = []
-        self.n_out = self.encoder.n_out
+        self.n_out = self.encoder.n_out + 81
 
         # self.n_out = 46080
         dims = tuple(map(int, args.dims.split("-")))  # 128-128-128
@@ -288,22 +288,20 @@ class HyperFlowNetwork(nn.Module):
         output.append(nn.Linear(self.n_out, args.input_dim, bias=True))
 
         total_output_dims += (dims[-1] * args.input_dim + args.input_dim * 4)
-        print('Output dims of HyperFlowNetwork: ', total_output_dims)
 
         self.output = ListModule(*output)
 
-        self.fc = nn.Linear(self.n_out, args.num_classes + 1, bias=True)
-
-    def forward(self, x):
+    def forward(self, x, conditional):
         encoder_outputs = self.encoder(x)
+        encoder_outputs = torch.cat([encoder_outputs, conditional], dim=1)
         # output = output.view(output.size(0), -1)
         multi_outputs = []
         for j, target_network_layer in enumerate(self.output):
             multi_outputs.append(target_network_layer(encoder_outputs))
         multi_outputs = torch.cat(multi_outputs, dim=1)
-        class_outputs = self.fc(encoder_outputs)
+        print('Output dims of HyperFlowNetwork: ', multi_outputs.size(1))
         # multi_outputs = nn.Sigmoid()(multi_outputs)  # Add sigmoid
-        return encoder_outputs, class_outputs
+        return multi_outputs
 
 
 class FlowNetS(nn.Module):
@@ -407,9 +405,9 @@ class ResNet50FPN(nn.Module):
 
         self.backbone = resnet_fpn_backbone(
             'resnet50', pretrained=True, trainable_layers=3)
-        #num_features = self.net.fc.in_features
-        #self.net.fc = nn.Linear(num_features, 1024)
-        #self.net = self.net.cuda()
+        # num_features = self.net.fc.in_features
+        # self.net.fc = nn.Linear(num_features, 1024)
+        # self.net = self.net.cuda()
         self.n_out = 1280
 
     def forward(self, x):
@@ -432,28 +430,29 @@ class ResNet101FPN(nn.Module):
 
         self.backbone = resnet_fpn_backbone(
             'resnet101', pretrained=True, trainable_layers=3)
-        #num_features = self.net.fc.in_features
-        #self.net.fc = nn.Linear(num_features, 1024)
-        #self.net = self.net.cuda()
-        self.n_out = 1280
+        # num_features = self.net.fc.in_features
+        # self.net.fc = nn.Linear(num_features, 1024)
+        # self.net = self.net.cuda()
+        self.n_out = (64 * 64 + 32 * 32 + 16 * 16 + 8 * 8 + 4 * 4)
+
+        outputs = []
+        for i in range(5):
+            outputs.append(nn.Conv2d(256, 1, 1))
+        self.conv1x1_layers = ListModule(*outputs)
 
     def forward(self, x):
         outputs = self.backbone(x)
         batch_size = outputs['0'].size(0)
 
+        # outputs['0'].view(batch_size, -1)
+
         net_outputs = []
-        for key, output in outputs.items():
-            net_outputs.append(nn.AvgPool2d(kernel_size=output.size(2))(
-                output))
+        for multi_scale_output, conv1x1_layer in zip(outputs.values(), self.conv1x1_layers):
+            # net_outputs.append(nn.AvgPool2d(kernel_size=multi_scale_output.size(2))(
+            #    multi_scale_output))
+            net_outputs.append(conv1x1_layer(
+                multi_scale_output).view(batch_size, -1))
             # print(net_outputs[-1].shape)
         net_outputs = torch.cat(net_outputs, dim=1).view(
             batch_size, -1)
         return net_outputs
-
-
-if __name__ == '__main__':
-    net = ResNet50FPN(input_width=256, input_height=256)
-    x = torch.rand(1, 3, 64, 64)
-    y = net(x)
-    import pdb
-    pdb.set_trace()

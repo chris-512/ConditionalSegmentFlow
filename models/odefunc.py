@@ -23,14 +23,15 @@ def divergence_approx(f, y, e=None):
     assert approx_tr_dzdx.requires_grad, \
         "(failed to add node to graph) f=%s %s, y(rgrad)=%s, e_dzdx:%s, e:%s, e_dzdx_e:%s cnt:%s" \
         % (
-        f.size(), f.requires_grad, y.requires_grad, e_dzdx.requires_grad, e.requires_grad, e_dzdx_e.requires_grad, cnt)
+            f.size(), f.requires_grad, y.requires_grad, e_dzdx.requires_grad, e.requires_grad, e_dzdx_e.requires_grad, cnt)
     return approx_tr_dzdx
 
 
 def divergence_bf(dx, y):
     sum_diag = 0.
     for i in range(y.shape[-1]):
-        sum_diag += torch.autograd.grad(dx[:,:, i].sum(), y, create_graph=True)[0].contiguous()[:, :, i].contiguous()
+        sum_diag += torch.autograd.grad(dx[:, :, i].sum(), y, create_graph=True)[
+            0].contiguous()[:, :, i].contiguous()
     return sum_diag.contiguous()
 
 
@@ -87,7 +88,8 @@ class ODEnet(nn.Module):
 
         for dim_out in (hidden_dims + (input_shape[0],)):
             layer_kwargs = {}
-            layer = base_layer(hidden_shape[0], dim_out, context_dim, **layer_kwargs)
+            layer = base_layer(
+                hidden_shape[0], dim_out, context_dim, **layer_kwargs)
             layers.append(layer)
             activation_fns.append(NONLINEARITIES[nonlinearity])
 
@@ -120,7 +122,8 @@ class ODEfunc(nn.Module):
 
     def forward(self, t, states):
         y = states[0]
-        t = torch.ones(y.size(0), 1).to(y) * t.clone().detach().requires_grad_(True).type_as(y)
+        t = torch.ones(y.size(0), 1).to(
+            y) * t.clone().detach().requires_grad_(True).type_as(y)
         self._num_evals += 1
         for state in states:
             state.requires_grad_(True)
@@ -158,7 +161,8 @@ class ODEhyperfunc(nn.Module):
 
     def forward(self, t, states):
         y = states[0]
-        t = torch.ones(y.size(0), 1).to(y) * t.clone().detach().requires_grad_(True).type_as(y)
+        t = torch.ones(y.size(0), 1).to(
+            y) * t.clone().detach().requires_grad_(True).type_as(y)
         self._num_evals += 1
         for state in states:
             state.requires_grad_(True)
@@ -171,12 +175,14 @@ class ODEhyperfunc(nn.Module):
             dy = self.diffeq(t, y, c)
             if self.training:
                 if self.use_div_approx_train:
-                    divergence = divergence_approx(dy, y, e=self._e).unsqueeze(-1)
+                    divergence = divergence_approx(
+                        dy, y, e=self._e).unsqueeze(-1)
                 else:
                     divergence = divergence_bf(dy, y).unsqueeze(-1)
             else:
                 if self.use_div_approx_test:
-                    divergence = divergence_approx(dy, y, e=self._e).unsqueeze(-1)
+                    divergence = divergence_approx(
+                        dy, y, e=self._e).unsqueeze(-1)
                 else:
                     divergence = divergence_bf(dy, y).unsqueeze(-1)
             return dy, -divergence, torch.zeros_like(c).requires_grad_(True)
@@ -191,32 +197,41 @@ class ODEHypernet(nn.Module):
         super(ODEHypernet, self).__init__()
 
         self.activation = NONLINEARITIES[nonlinearity]
-        #self.hypernetwork = hypernetwork
-        #self.target_networks_weights = target_networks_weights
+        # self.hypernetwork = hypernetwork
+        # self.target_networks_weights = target_networks_weights
         self.use_bias = use_bias
-        self.dims = [input_dim] + list(map(int, dims.split("-"))) + [input_dim]
+        self.dims = [input_dim] + \
+            list(map(int, dims.split("-"))) + [input_dim]
 
     def forward(self, context, y, target_networks_weights):
         dx = y
         i = 0
+
         batch_size = target_networks_weights.size(0)
         for l in range(len(self.dims) - 1):
             weight = target_networks_weights[:, i:i + self.dims[l] * self.dims[l + 1]].view(
                 (batch_size, self.dims[l], self.dims[l + 1]))
+
             i += self.dims[l] * self.dims[l + 1]
             dx = torch.bmm(dx, weight)
-            dx += target_networks_weights[:, i:i + self.dims[l + 1]].unsqueeze(1)
+            dx += target_networks_weights[:,
+                                          i:i + self.dims[l + 1]].unsqueeze(1)
+
             i += self.dims[l + 1]
             # scaling
-            weight_scales = target_networks_weights[:, i:i + self.dims[l + 1]].view((batch_size, 1, self.dims[l + 1]))
+            weight_scales = target_networks_weights[:, i:i + self.dims[l + 1]].view(
+                (batch_size, 1, self.dims[l + 1]))
             i += self.dims[l + 1]
-            bias_scales = target_networks_weights[:, i:i + self.dims[l + 1]].unsqueeze(1)
+            bias_scales = target_networks_weights[:,
+                                                  i:i + self.dims[l + 1]].unsqueeze(1)
             i += self.dims[l + 1]
-            scale = torch.sigmoid(torch.bmm(context.unsqueeze(2), weight_scales) + bias_scales)
+            scale = torch.sigmoid(
+                torch.bmm(context.unsqueeze(2), weight_scales) + bias_scales)
             dx = scale * dx
 
             # Shifting
-            weight_shift = target_networks_weights[:, i:i + self.dims[l + 1]].view((batch_size, 1, self.dims[l + 1]))
+            weight_shift = target_networks_weights[:, i:i + self.dims[l + 1]].view(
+                (batch_size, 1, self.dims[l + 1]))
             i += self.dims[l + 1]
             dx += torch.bmm(context.unsqueeze(2), weight_shift)
 
@@ -239,7 +254,8 @@ class ODEhyperfunc2D(nn.Module):
 
     def forward(self, t, states):
         y = states[0]
-        t = torch.ones(y.size(0), 1).to(y) * t.clone().detach().requires_grad_(True).type_as(y)
+        t = torch.ones(y.size(0), 1).to(
+            y) * t.clone().detach().requires_grad_(True).type_as(y)
         self._num_evals += 1
         for state in states:
             state.requires_grad_(True)
@@ -264,8 +280,8 @@ class ODEHypernet2D(nn.Module):
         super(ODEHypernet2D, self).__init__()
 
         self.activation = NONLINEARITIES[nonlinearity]
-        #self.hypernetwork = hypernetwork
-        #self.target_networks_weights = target_networks_weights
+        # self.hypernetwork = hypernetwork
+        # self.target_networks_weights = target_networks_weights
         self.use_bias = use_bias
         self.dims = [input_dim] + list(map(int, dims.split("-"))) + [input_dim]
 
@@ -279,18 +295,23 @@ class ODEHypernet2D(nn.Module):
             i += (self.dims[l]+2) * self.dims[l + 1]
             dx = torch.cat((dx, y_points), dim=2)
             dx = torch.bmm(dx, weight)
-            dx += target_networks_weights[:, i:i + self.dims[l + 1]].unsqueeze(1)
+            dx += target_networks_weights[:,
+                                          i:i + self.dims[l + 1]].unsqueeze(1)
             i += self.dims[l + 1]
             # scaling
-            weight_scales = target_networks_weights[:, i:i + self.dims[l + 1]].view((batch_size, 1, self.dims[l + 1]))
+            weight_scales = target_networks_weights[:, i:i + self.dims[l + 1]].view(
+                (batch_size, 1, self.dims[l + 1]))
             i += self.dims[l + 1]
-            bias_scales = target_networks_weights[:, i:i + self.dims[l + 1]].unsqueeze(1)
+            bias_scales = target_networks_weights[:,
+                                                  i:i + self.dims[l + 1]].unsqueeze(1)
             i += self.dims[l + 1]
-            scale = torch.sigmoid(torch.bmm(context.unsqueeze(2), weight_scales) + bias_scales)
+            scale = torch.sigmoid(
+                torch.bmm(context.unsqueeze(2), weight_scales) + bias_scales)
             dx = scale * dx
 
             # Shifting
-            weight_shift = target_networks_weights[:, i:i + self.dims[l + 1]].view((batch_size, 1, self.dims[l + 1]))
+            weight_shift = target_networks_weights[:, i:i + self.dims[l + 1]].view(
+                (batch_size, 1, self.dims[l + 1]))
             i += self.dims[l + 1]
             dx += torch.bmm(context.unsqueeze(2), weight_shift)
 

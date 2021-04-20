@@ -1,3 +1,5 @@
+import torch.nn as nn
+import torch
 import os
 import cv2
 import glob
@@ -69,7 +71,7 @@ class DataLoader():
         self.annos = []
         self.split = split
         if self.split == 'train2017':
-            self.sample_no = 500
+            self.sample_no = 5500
         else:
             self.sample_no = 100
         self.load_image_paths()

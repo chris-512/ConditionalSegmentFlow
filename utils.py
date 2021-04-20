@@ -503,11 +503,11 @@ def draw_ngsim_plots(hist, y_gt, y_pred, op_mask, dir):
         plt.close()
 
 
-def draw_sdd_heatmap(img,
-                     log_px_pred,
-                     X, Y,
-                     save_path
-                     ):
+def draw_heatmap(img,
+                 log_px_pred,
+                 X, Y,
+                 save_path
+                 ):
     def transparent_cmap(cmap, N=255):
         "Copy colormap and set alpha values"
         mycmap = cmap
@@ -525,9 +525,9 @@ def draw_sdd_heatmap(img,
     # pdb.set_trace()
     h, w, _ = img.shape
     plt.figure(figsize=(w // 25, h // 25,))
-    # plt.imshow(img)
-    plt.contourf(X, Y, Z.reshape(X.shape), vmin=vmin, vmax=vmax,
-                 cmap=plt.cm.jet, levels=20)  # transparent_cmap(plt.cm.jet)
+    plt.imshow(img)
+    plt.contourf(X, Y, np.transpose(Z.reshape(X.shape), (1, 0)), vmin=vmin, vmax=vmax,
+                 cmap=transparent_cmap(plt.cm.jet), levels=20)  # transparent_cmap(plt.cm.jet)
 
     plt.axis("off")
     plt.savefig(save_path, format='png', bbox_inches='tight', pad_inches=0)
