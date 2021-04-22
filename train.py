@@ -15,7 +15,10 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from utils import draw_hyps, draw_heatmap
-from models.networks_regression import HyperRegression
+# from models.networks_regression import HyperRegression
+from models.inn import CondINNWrapper
+from models import feature_net
+
 from args import get_args
 from utils import AverageValueMeter, set_random_seed, resume, save
 from dataset_coco import SamplePointData
@@ -49,12 +52,16 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
     if args.gpu is not None:
         print("Use GPU: {} for training".format(args.gpu))
 
-    model = HyperRegression(args, input_width=256, input_height=256)
+    efros_net = feature_net.KitModel(None)
+    img_dims = (256, 256)
+    model = CondINNWrapper(args,
+                           efros_net, img_dims=img_dims)
 
     torch.cuda.set_device(args.gpu)
     model = model.cuda(args.gpu)
+
     start_epoch = 0
-    optimizer = model.make_optimizer(args)
+    """
     if args.resume_checkpoint is None and os.path.exists(os.path.join(save_dir, 'checkpoint-latest.pt')):
         args.resume_checkpoint = os.path.join(
             save_dir, 'checkpoint-latest.pt')  # use the latest checkpoint
@@ -66,22 +73,7 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
             model, _, start_epoch = resume(
                 args.resume_checkpoint, model, optimizer=None, strict=(not args.resume_non_strict))
         print('Resumed from: ' + args.resume_checkpoint)
-
-    # initialize the learning rate scheduler
-    if args.scheduler == 'exponential':
-        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, args.exp_decay)
-    elif args.scheduler == 'step':
-        scheduler = optim.lr_scheduler.StepLR(
-            optimizer, step_size=args.epochs // 2, gamma=0.1)
-    elif args.scheduler == 'linear':
-        def lambda_rule(ep):
-            lr_l = 1.0 - max(0, ep - 0.5 * args.epochs) / \
-                float(0.5 * args.epochs)
-            return lr_l
-        scheduler = optim.lr_scheduler.LambdaLR(
-            optimizer, lr_lambda=lambda_rule)
-    else:
-        assert 0, "args.schedulers should be either 'exponential' or 'linear'"
+    """
 
     # main training loop
     start_time = time.time()
@@ -123,8 +115,15 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
 
             step = bidx + len(train_loader) * epoch
             model.train()
-            recon_nats = model(input_tensor, points_label,
-                               class_condition, optimizer, step, None)
+
+            # backpropagate
+            model(input_tensor, points_label,
+                  cond=class_condition)
+
+            model.reverse_sample(z, cond=class_condition)
+
+            import pdb
+            pdb.set_trace()
 
             # first sample from batch
             points = points_label[0].cpu().detach().numpy().squeeze()
