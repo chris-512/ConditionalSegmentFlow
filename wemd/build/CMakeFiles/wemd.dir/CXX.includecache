@@ -726,7 +726,7 @@ climits
 limits.h
 -
 
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/blitz_util_SS.h
+/home/syk/git_repos/cDistFlow/wemd/blitz_util_SS.h
 algorithm
 -
 cassert
@@ -738,7 +738,7 @@ blitz/array/cartesian.h
 blitz/array/indirect.h
 -
 
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/lift.h
+/home/syk/git_repos/cDistFlow/wemd/lift.h
 blitz/array.h
 -
 blitz/array/domain.h
@@ -762,17 +762,17 @@ utility
 memory
 -
 blitz_util_SS.h
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/blitz_util_SS.h
+/home/syk/git_repos/cDistFlow/wemd/blitz_util_SS.h
 lifting-schemes.h
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/lifting-schemes.h
+/home/syk/git_repos/cDistFlow/wemd/lifting-schemes.h
 lift_impl.h
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/lift_impl.h
+/home/syk/git_repos/cDistFlow/wemd/lift_impl.h
 
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/lift_impl.h
+/home/syk/git_repos/cDistFlow/wemd/lift_impl.h
 blitz_util_SS.h
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/blitz_util_SS.h
+/home/syk/git_repos/cDistFlow/wemd/blitz_util_SS.h
 
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/lifting-schemes.h
+/home/syk/git_repos/cDistFlow/wemd/lifting-schemes.h
 cmath
 -
 string
@@ -780,7 +780,7 @@ string
 stdexcept
 -
 
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/sparse.h
+/home/syk/git_repos/cDistFlow/wemd/sparse.h
 iostream
 -
 blitz/array.h
@@ -790,17 +790,17 @@ map
 utility
 -
 
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/wemd_impl.cpp
+/home/syk/git_repos/cDistFlow/wemd/wemd_impl.cpp
 vector
 -
 blitz/array.h
 -
 wemd_impl.h
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/wemd_impl.h
+/home/syk/git_repos/cDistFlow/wemd/wemd_impl.h
 stdio.h
 -
 
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/wemd_impl.h
+/home/syk/git_repos/cDistFlow/wemd/wemd_impl.h
 limits
 -
 stdexcept
@@ -820,7 +820,7 @@ utility
 blitz/array.h
 -
 sparse.h
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/sparse.h
+/home/syk/git_repos/cDistFlow/wemd/sparse.h
 lift.h
-/home/mlsyn91/samsung_papers/regressionFlow/wemd/lift.h
+/home/syk/git_repos/cDistFlow/wemd/lift.h
 

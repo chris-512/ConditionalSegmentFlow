@@ -25,43 +25,33 @@ def decode_img(file_path, width=None, height=None):
     return img
 
 
-def decode_sample_points(file_path, num_classes=80, nr_samples_from_mask=500):
+def decode_mask(file_path, num_classes=80, nr_samples_from_mask=500):
     """
         Read the float file containing the object information
     """
     segim = cv2.imread(file_path)
     h, w, c = segim.shape
-
-    def normalize(x, max_x):
-        return x / float(max_x)
-
     cls_ids = np.unique(segim)
-    cls_ids = cls_ids[cls_ids != 255]
     cls_ids = cls_ids[cls_ids < num_classes]
 
-    as_background = False
+    binary_mask = np.zeros((h, w, c), dtype=np.float32)
+    binary_mask += 0.2
 
     if len(cls_ids) != 0:
         chosen_cls_id = np.random.choice(cls_ids)
-        nr_positives = nr_samples_from_mask
-        yx = np.where(segim == chosen_cls_id)
-        if len(yx[0]) >= 1000:
-            sample_index = np.random.choice(len(yx[0]), nr_positives)
-            positives = np.transpose(np.asarray([normalize(yx[0][sample_index], h),
-                                                 normalize(yx[1][sample_index], w)]), (1, 0))
 
-            points_label = positives
-            class_label_id = (chosen_cls_id + 1)
-        else:
-            as_background = True
+        #down_ratios = 64 / h, 64 / w
+        #y_found_ind = (yx[0] * down_ratios[0]).astype(np.int)
+        #x_found_ind = (yx[1] * down_ratios[1]).astype(np.int)
+        binary_mask[segim==chosen_cls_id] = 0.8
+        class_label_id = (chosen_cls_id + 1)
 
-    if len(cls_ids) == 0 or as_background:
-        points_label = np.vstack([np.asarray([np.random.uniform(0, 1), np.random.uniform(0, 1)])
-                                  for i in range(nr_samples_from_mask)])
+    else:
         class_label_id = 0
 
-    points_label = points_label.astype(np.float32)
-    return points_label, class_label_id
+    binary_mask = cv2.resize(binary_mask, (64, 64))[:, :, 0]
+
+    return binary_mask, class_label_id
 
 
 class DataLoader():
@@ -136,7 +126,7 @@ class SamplePointData(Dataset):
             anno_path = self.dataset.annos[idx]
 
         color_img = decode_img(img_path, width=self.width, height=self.height)
-        points_label, class_label = decode_sample_points(
+        mask_img, class_label = decode_mask(
             anno_path, num_classes=self.num_classes)
         # onehot_class_condition = get_onehot_tensor(self.class_size, self.width,
         #                                 self.height, class_label)  # class id
@@ -144,7 +134,7 @@ class SamplePointData(Dataset):
             class_label]
 
         input, output, label_id, label_str = color_img, \
-            points_label, \
+            mask_img, \
             onehot_class_condition, \
             self.labelmap[class_label]
         """
