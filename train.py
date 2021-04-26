@@ -26,6 +26,8 @@ from dataset_coco import SamplePointData
 import mmfp_utils
 from utils import draw_hyps
 
+from torch.utils.tensorboard import SummaryWriter
+
 faulthandler.enable()
 
 
@@ -52,19 +54,18 @@ def parse_first_example_to_npy(input_tensor, gt_mask_tensor, pred_mask_tensor, c
     rgb_im = ((rgb_im + 1) * 255/2.).astype(np.uint8)
 
     seg_im = gt_mask_tensor[0].cpu().detach().numpy().squeeze()
-    seg_im *= 255
-    seg_im = np.tile(np.expand_dims(cv2.resize(seg_im, (256, 256)), axis=2), (1, 1, 3))
-    seg_im = seg_im.astype(np.uint8)
+    seg_im = np.tile(np.expand_dims(cv2.resize(
+        seg_im, (256, 256)), axis=2), (1, 1, 3))
+    seg_im = (np.clip(seg_im, 0, 1) * 255).astype(np.uint8)
 
-    pred_seg_im = pred_mask_tensor[0]
-    pred_seg_im = pred_seg_im[0].unsqueeze(0).repeat(3, 1, 1)
+    pred_seg_im = pred_mask_tensor[0].repeat(3, 1, 1)
     pred_seg_im = pred_seg_im.cpu().detach().numpy().squeeze()
-    pred_seg_im *= 255
     pred_seg_im = np.transpose(pred_seg_im, (1, 2, 0))
     pred_seg_im = cv2.resize(pred_seg_im, (256, 256))
-    pred_seg_im = pred_seg_im.astype(np.uint8)
+    pred_seg_im = (np.clip(pred_seg_im, 0, 1) * 255).astype(np.uint8)
 
     return rgb_im, seg_im, pred_seg_im, class_label[0]
+
 
 def main_worker(gpu, save_dir, ngpus_per_node, args):
     # basic setup
@@ -114,36 +115,50 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
         dataset=test_set, batch_size=1, shuffle=True,
         num_workers=0, pin_memory=True)
 
+    # Summary Writer
+    tensorboard_writer = SummaryWriter(log_dir=save_dir)
+
     # train iteration
     for epoch in range(start_epoch, args.epochs):
         # adjust the learning rate
-        #if (epoch + 1) % args.exp_decay_freq == 0:
-        #    scheduler.step(epoch=epoch)
+        if (epoch + 1) % args.exp_decay_freq == 0:
+            model.scheduler_step(epoch=epoch)
 
         # train for one epoch
         print("Epoch starts:")
+        model.train()
         for bidx, (input_tensor, gt_mask_tensor, class_condition, class_label) in enumerate(train_loader):
             # x : [args.batch_size, 5, W, H]
             # y : [args.batch_size, 30, 2]s
-            input_tensor = input_tensor.float().to(args.gpu)
-            gt_mask_tensor = gt_mask_tensor.float().to(args.gpu)
-            # gt_mask_tensor += torch.empty(gt_mask_tensor.shape).normal_(mean=0, std=0.005).cuda()
             step = bidx + len(train_loader) * epoch
-            model.train()
 
             # backpropagate
-            reverse_sample, loss = model(input_tensor, gt_mask_tensor,
-                  class_condition)
+            reverse_sample, losses = model(input_tensor, gt_mask_tensor,
+                                           class_condition)
+
+            train_loss = losses['train_loss']
+            prior_prob = losses['prior_prob']
+            logdet = losses['logdet']
+            bce_loss = losses['bce_loss']
+            recons_error = losses['recons_error']
+
+            if bidx % 10 == 0:
+                tensorboard_writer.add_scalar("Loss/Train", train_loss, step)
+                tensorboard_writer.add_scalar("Loss/PriorProb", prior_prob, step)
+                tensorboard_writer.add_scalar("Loss/LogDet", logdet, step)
+                tensorboard_writer.add_scalar("Loss/BCELoss", bce_loss, step)
+                tensorboard_writer.add_scalar("Loss/ReconsError", recons_error, step)
 
             # torch.tensor -> np.array
-            rgb_im, gt_seg_im, pred_seg_im, label_str = parse_first_example_to_npy(input_tensor, gt_mask_tensor, reverse_sample, class_label)
+            rgb_im, gt_seg_im, pred_seg_im, label_str = parse_first_example_to_npy(
+                input_tensor, gt_mask_tensor, reverse_sample, class_label)
 
             print('current label class: ', label_str)
 
             cv2.imshow('test', np.hstack([rgb_im, gt_seg_im, pred_seg_im]))
             key = cv2.waitKey(1)
 
-            loss_avg_meter.update(loss.item())
+            loss_avg_meter.update(train_loss.item())
             # multi_ce_loss_avg_meter.update(ce_loss)
             if step % args.log_freq == 0:
                 duration = time.time() - start_time
@@ -183,17 +198,16 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
             if key == ord('q'):
                 break
 
-
                 # print("Memory")
                 # print(process.memory_info().rss / (1024.0 ** 3))
         # save visualizations
+
         if (epoch + 1) % args.viz_freq == 0:
             # reconstructions
             print('test start')
             model.eval()
             for bidx, (input_tensor, gt_mask_tensor, class_condition, class_label) in enumerate(test_loader):
-                input_tensor = input_tensor.float().to(args.gpu)
-                gt_mask_tensor = gt_mask_tensor.float().to(args.gpu)
+                print(bidx)
                 if args.timeit:
                     t1 = time.time()
                 pred_seg_mask = model.decode(
@@ -202,16 +216,18 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
                     t2 = time.time()
                     print('inference speed (1/s): ', 1.0/(t2-t1))
 
-                #pred_seg_mask = pred_seg_mask.mean(dim=0)
-                #import pdb; pdb.set_trace()
+                # pred_seg_mask = pred_seg_mask.mean(dim=0)
+                # import pdb; pdb.set_trace()
 
-                rgb_im, gt_seg_im, pred_seg_im, label_str = parse_first_example_to_npy(input_tensor, gt_mask_tensor, pred_seg_mask, class_label)
+                rgb_im, gt_seg_im, pred_seg_im, label_str = parse_first_example_to_npy(
+                    input_tensor, gt_mask_tensor, pred_seg_mask, class_label)
 
                 save_img = np.hstack([rgb_im, gt_seg_im, pred_seg_im])
-                cv2.putText(save_img, label_str, (save_img.shape[1]//2, save_img.shape[0]//2), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2, cv2.LINE_AA)
+                cv2.putText(save_img, label_str, (save_img.shape[1]//2, save_img.shape[0]//2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
                 epoch_save_dir = os.path.join(
-                save_dir, 'images', 'epoch-' + str(epoch))
+                    save_dir, 'images', 'epoch-' + str(epoch))
 
                 if not os.path.exists(epoch_save_dir):
                     os.makedirs(epoch_save_dir)
@@ -220,30 +236,6 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
                                          'epoch-' + str(epoch))
                 cv2.imwrite(os.path.join(
                     save_path, str(bidx) + '.jpg'), save_img)
-
-                # calculate log probability
-                """
-                log_py, log_px, (log_py_grid, log_px_grid) = model.get_logprob(
-                    input_tensor, points_label, class_condition)
-
-                log_py = log_py.cpu().detach().numpy().squeeze()
-                log_px = log_px.cpu().detach().numpy().squeeze()
-
-                hyps_name = f"{bidx}-hyps.jpg"
-                print(hyps_name)
-                print("nll_x", str(-1.0 * log_px))
-                print("nll_y", str(-1.0 * log_py))
-                print("nll_(x+y)", str(-1.0 * (log_px + log_py)))
-
-                # nll_px_sum = nll_px_sum + -1.0 * log_px
-                # nll_py_sum = nll_py_sum + -1.0 * log_py
-                # counter = counter + 1.0
-
-                # multimod_emd = mmfp_utils.wemd_from_pred_samples(
-                #    estimated_points)
-                # multimod_emd_sum += multimod_emd
-                # print("multimod_emd", multimod_emd)
-                """
 
                 """
                 _, _, height, width = input_tensor.shape
@@ -264,11 +256,15 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
                              )
                 """
 
+        """
         if (epoch + 1) % args.save_freq == 0:
+            print('save checkpoint...')
             save(model, model.get_optimizer(), epoch + 1,
                  os.path.join(save_dir, 'checkpoint-%d.pt' % epoch))
             save(model, model.get_optimizer(), epoch + 1,
                  os.path.join(save_dir, 'checkpoint-latest.pt'))
+            print('save checkpoint...FIN')
+        """
 
 
 def main():

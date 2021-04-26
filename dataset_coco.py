@@ -35,7 +35,6 @@ def decode_mask(file_path, num_classes=80, nr_samples_from_mask=500):
     cls_ids = cls_ids[cls_ids < num_classes]
 
     binary_mask = np.zeros((h, w, c), dtype=np.float32)
-    binary_mask += 0.2
 
     if len(cls_ids) != 0:
         chosen_cls_id = np.random.choice(cls_ids)
@@ -43,13 +42,16 @@ def decode_mask(file_path, num_classes=80, nr_samples_from_mask=500):
         #down_ratios = 64 / h, 64 / w
         #y_found_ind = (yx[0] * down_ratios[0]).astype(np.int)
         #x_found_ind = (yx[1] * down_ratios[1]).astype(np.int)
-        binary_mask[segim==chosen_cls_id] = 0.8
-        class_label_id = (chosen_cls_id + 1)
-
+        N = len(binary_mask[segim == chosen_cls_id])
+        if N > 30000:
+            binary_mask[segim == chosen_cls_id] = 1.0
+            class_label_id = (chosen_cls_id + 1)
+        else:
+            class_label_id = 0
     else:
         class_label_id = 0
 
-    binary_mask = cv2.resize(binary_mask, (64, 64))[:, :, 0]
+    binary_mask = cv2.resize(binary_mask, (256, 256))[:, :, 0]
 
     return binary_mask, class_label_id
 
@@ -61,9 +63,9 @@ class DataLoader():
         self.annos = []
         self.split = split
         if self.split == 'train2017':
-            self.sample_no = 5500
+            self.sample_no = 16 * 600
         else:
-            self.sample_no = 100
+            self.sample_no = 16 * 6
         self.load_image_paths()
         self.load_anno_paths()
 
