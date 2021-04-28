@@ -335,24 +335,6 @@ def validate_sample(loader, model, args, max_samples=None, save_dir=None):
     return res
 
 
-def save(model, optimizer, epoch, path):
-    d = {
-        'epoch': epoch,
-        'model': model.state_dict(),
-        'optimizer': optimizer.state_dict()
-    }
-    torch.save(d, path)
-
-
-def resume(path, model, optimizer=None, strict=True):
-    ckpt = torch.load(path)
-    model.load_state_dict(ckpt['model'], strict=strict)
-    start_epoch = ckpt['epoch']
-    if optimizer is not None:
-        optimizer.load_state_dict(ckpt['optimizer'])
-    return model, optimizer, start_epoch
-
-
 def validate(test_loader, model, epoch, writer, save_dir, args, clf_loaders=None):
     model.eval()
 

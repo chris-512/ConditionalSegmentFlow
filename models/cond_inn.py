@@ -18,46 +18,54 @@ import models.subnet_coupling as subnet_coupling
 import models.config as c
 import models.modules as modules
 
+from scipy.stats import laplace
+
 # the reason the subnet init is needed, is that with uninitalized
 # weights, the numerical jacobian check gives inf, nan, etc,
 
 # https://github.com/VLL-HD/FrEIA/blob/451286ffae2bfc42f6b0baaba47f3d4583258599/tests/test_reversible_graph_net.py
+
 
 def subnet_initialization(m):
     if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
         nn.init.xavier_normal_(m.weight)
         m.weight.data *= 0.3
         m.bias.data *= 0.1
-        #m.weight.data.fill_(0.)
-        #m.bias.data.fill_(0.)
+        # m.weight.data.fill_(0.)
+        # m.bias.data.fill_(0.)
+
 
 def subnet_fc(c_in, c_out):
     print('subnet_fc: ', c_in, c_out)
     net = nn.Sequential(nn.Linear(c_in, 32), nn.ReLU(),
-                         nn.Linear(32,  c_out))
+                        nn.Linear(32,  c_out))
     net.apply(subnet_initialization)
     return net
+
 
 def subnet_conv(c_in, c_out):
     print('subnet_cont: ', c_in, c_out)
     net = nn.Sequential(nn.Conv2d(c_in, 32,   3, padding=1), nn.ReLU(),
-                         nn.Conv2d(32,  c_out, 3, padding=1))
+                        nn.Conv2d(32,  c_out, 3, padding=1))
     net.apply(subnet_initialization)
     return net
+
 
 def subnet_conv2(c_in, c_out):
     print('subnet_cont: ', c_in, c_out)
     net = nn.Sequential(nn.Conv2d(c_in, 64,   3, padding=1), nn.ReLU(),
-                         nn.Conv2d(64,  c_out, 3, padding=1))
+                        nn.Conv2d(64,  c_out, 3, padding=1))
     net.apply(subnet_initialization)
     return net
+
 
 def subnet_conv_1x1(c_in, c_out):
     print('subnet_conv_1x1: ', c_in, c_out)
     net = nn.Sequential(nn.Conv2d(c_in, 64,   1), nn.ReLU(),
-                         nn.Conv2d(64,  c_out, 1))
+                        nn.Conv2d(64,  c_out, 1))
     net.apply(subnet_initialization)
     return net
+
 
 class ListModule(nn.Module):
     def __init__(self, *args):
@@ -96,7 +104,7 @@ class CondINN(nn.Module):
         self.conditions = [Ff.ConditionNode(3 * 4, 256 // 2, 256 // 2, name='cond-0'),
                            Ff.ConditionNode(
                                3 * 16, 256 // 4, 256 // 4, name='cond-1'),
-                            Ff.ConditionNode(self.num_classes, name='cond-2')]
+                           Ff.ConditionNode(self.num_classes, name='cond-2')]
 
         self.nodes = []
 
@@ -117,7 +125,7 @@ class CondINN(nn.Module):
                               name=f'i_resnet_{k}'))
             print(self.nodes[-1].out0[0].output_dims)
         """
-    
+
         block = Fm.GLOWCouplingBlock
 
         for k in range(13):
@@ -193,7 +201,6 @@ class CondINN(nn.Module):
         self.nodes.append(Ff.Node([self.nodes[-1].out0, split_node.out1],
                                   Fm.Concat1d, {'dim': 0}, name='concat'))
         print(self.nodes[-1].out0[0].output_dims)
-
 
         self.nodes.append(Ff.OutputNode(self.nodes[-1], name='output'))
 
@@ -305,6 +312,22 @@ class CondINNWrapper(nn.Module):
         opt = _get_opt_(list(self.parameters()))
         return opt
 
+    def save(self, epoch, path):
+        d = {
+            'epoch': epoch,
+            'model': self.state_dict(),
+            'optimizer': self.optimizer.state_dict()
+        }
+        torch.save(d, path)
+
+    def resume(self, path, strict=True):
+        ckpt = torch.load(path)
+        self.load_state_dict(ckpt['model'], strict=strict)
+        start_epoch = ckpt['epoch']
+        if self.optimizer is not None:
+            self.optimizer.load_state_dict(ckpt['optimizer'])
+        return start_epoch
+
     def get_optimizer(self):
         return self.optimizer
 
@@ -387,7 +410,8 @@ class CondINNWrapper(nn.Module):
 
         x = x.float().cuda()
         y = y.float().cuda()
-        y = y.float().cuda() + torch.normal(mean=torch.zeros_like(y), std = torch.ones_like(y) * 0.001).cuda()
+        y = y.float().cuda() + torch.normal(mean=torch.zeros_like(y),
+                                            std=torch.ones_like(y) * 0.001).cuda()
         cond = cond.cuda()
 
         # conditions = self.conditioning(x, cond)
@@ -412,7 +436,14 @@ class CondINNWrapper(nn.Module):
         # logs = [B, C, W, H]
         mean, logs = self.prior(cond)
         print("Before: ", mean[0].mean(), logs[0].mean())
-        prior_prob = modules.GaussianDiag.logp(mean, logs, z)
+
+        dist = 'gaussian'
+        if dist == 'gaussian':
+            prior_prob = modules.GaussianDiag.logp(mean, logs, z)
+        elif dist == 'laplace':
+            prior_prob = -torch.log(torch.tensor(2)) - \
+                torch.abs((z - mean) / torch.exp(logs))
+            prior_prob = prior_prob.sum(dim=[1, 2, 3])
 
         # classification loss
         y_logits = self.project_class(z.mean(2).mean(2))
@@ -459,7 +490,14 @@ class CondINNWrapper(nn.Module):
         # z = z.mean() + torch.empty(z.shape).normal_(mean=0, std=0.005).cuda()
         mean, logs = self.prior(cond)
         print("After: ", mean[0].mean(), logs[0].mean())
-        z = modules.GaussianDiag.sample(mean, logs, 0.01)
+
+        if dist == 'laplace':
+            mean = mean.detach().cpu().numpy()
+            logs = logs.detach().cpu().numpy()
+            z = laplace.rvs(loc=mean, scale=np.exp(logs) * 0.01)
+            z = torch.tensor(z).cuda().float()
+        elif dist == 'gaussian':
+            z = modules.GaussianDiag.sample(mean, logs, 0.01)
         z = modules.unsqueeze2d(z, factor=4)
         z = z.view(z.size(0), -1)
 

@@ -20,7 +20,7 @@ from models.cond_inn import CondINNWrapper
 from models import feature_net
 
 from args import get_args
-from utils import AverageValueMeter, set_random_seed, resume, save
+from utils import AverageValueMeter, set_random_seed
 from dataset_coco import SamplePointData
 
 import mmfp_utils
@@ -81,19 +81,18 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
     torch.cuda.set_device(args.gpu)
 
     start_epoch = 0
-    """
     if args.resume_checkpoint is None and os.path.exists(os.path.join(save_dir, 'checkpoint-latest.pt')):
         args.resume_checkpoint = os.path.join(
             save_dir, 'checkpoint-latest.pt')  # use the latest checkpoint
+
     if args.resume_checkpoint is not None:
         if args.resume_optimizer:
-            model, optimizer, start_epoch = resume(
-                args.resume_checkpoint, model, optimizer, strict=(not args.resume_non_strict))
+            start_epoch = model.resume(
+                args.resume_checkpoint, strict=(not args.resume_non_strict))
         else:
-            model, _, start_epoch = resume(
-                args.resume_checkpoint, model, optimizer=None, strict=(not args.resume_non_strict))
+            start_epoch = model.resume(
+                args.resume_checkpoint, strict=(not args.resume_non_strict))
         print('Resumed from: ' + args.resume_checkpoint)
-    """
 
     # main training loop
     start_time = time.time()
@@ -144,10 +143,12 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
 
             if bidx % 10 == 0:
                 tensorboard_writer.add_scalar("Loss/Train", train_loss, step)
-                tensorboard_writer.add_scalar("Loss/PriorProb", prior_prob, step)
+                tensorboard_writer.add_scalar(
+                    "Loss/PriorProb", prior_prob, step)
                 tensorboard_writer.add_scalar("Loss/LogDet", logdet, step)
                 tensorboard_writer.add_scalar("Loss/BCELoss", bce_loss, step)
-                tensorboard_writer.add_scalar("Loss/ReconsError", recons_error, step)
+                tensorboard_writer.add_scalar(
+                    "Loss/ReconsError", recons_error, step)
 
             # torch.tensor -> np.array
             rgb_im, gt_seg_im, pred_seg_im, label_str = parse_first_example_to_npy(
@@ -256,15 +257,13 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
                              )
                 """
 
-        """
         if (epoch + 1) % args.save_freq == 0:
             print('save checkpoint...')
-            save(model, model.get_optimizer(), epoch + 1,
-                 os.path.join(save_dir, 'checkpoint-%d.pt' % epoch))
-            save(model, model.get_optimizer(), epoch + 1,
-                 os.path.join(save_dir, 'checkpoint-latest.pt'))
+            model.save(epoch + 1,
+                       os.path.join(save_dir, 'checkpoint-%d.pt' % epoch))
+            model.save(epoch + 1,
+                       os.path.join(save_dir, 'checkpoint-latest.pt'))
             print('save checkpoint...FIN')
-        """
 
 
 def main():
