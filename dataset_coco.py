@@ -63,9 +63,9 @@ class DataLoader():
         self.annos = []
         self.split = split
         if self.split == 'train2017':
-            self.sample_no = 16 * 900
+            self.sample_no = 16 * 600
         else:
-            self.sample_no = 16 * 6
+            self.sample_no = 16 * 10
         self.load_image_paths()
         self.load_anno_paths()
 

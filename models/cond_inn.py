@@ -283,7 +283,7 @@ class CondINNWrapper(nn.Module):
             nn.Parameter(torch.zeros([args.batch_size, 2 * C, H, W])))
         self.register_parameter(
             "test_prior_h",
-            nn.Parameter(torch.zeros([1, 2 * C, H, W])))
+            nn.Parameter(torch.zeros([args.batch_size//2, 2 * C, H, W])))
 
         self.optimizer = self.make_optimizer(args)
         self.scheduler = self.make_scheduler(args, self.optimizer)
@@ -385,7 +385,6 @@ class CondINNWrapper(nn.Module):
     def prior(self, y_onehot=None):
 
         if self.training:
-            print('training')
             B, C = self.prior_h.size(0), self.prior_h.size(1)
             hid = self.prior_h.detach().clone()
         else:
@@ -396,7 +395,11 @@ class CondINNWrapper(nn.Module):
         # preserve # of input_channels == # of output_channels
         hid = self.learn_top(hid)
         # encode one-hot class-condition
-        hid += self.project_ycond(y_onehot).view(B, C, 1, 1)
+        try:
+            hid += self.project_ycond(y_onehot).view(B, C, 1, 1)
+        except:
+            import pdb
+            pdb.post_mortem()
         C = hid.size(1)
         mean = hid[:, :C//2, ...]
         logs = hid[:, C//2:, ...]
@@ -435,7 +438,6 @@ class CondINNWrapper(nn.Module):
         # mean = [B, C, W, H]
         # logs = [B, C, W, H]
         mean, logs = self.prior(cond)
-        print("Before: ", mean[0].mean(), logs[0].mean())
 
         dist = 'gaussian'
         if dist == 'gaussian':
@@ -449,23 +451,14 @@ class CondINNWrapper(nn.Module):
         y_logits = self.project_class(z.mean(2).mean(2))
         bce_loss = self.bce_loss(y_logits, cond)
 
-        z_perturb = z_before + \
-            torch.normal(mean=torch.zeros_like(z_before),
-                         std=torch.ones_like(z_before) * 0.1)
-        sample, _ = self.cinn(z_perturb, conditions, rev=True)
-        recons_loss = ((sample - y) ** 2).mean()
-
         loss = -log_jac_det - prior_prob
-        print('CE loss: ', bce_loss)
-        print('prior loss: ', -prior_prob.mean())
-        print('log_jac_det: ', -log_jac_det.mean())
-        # print(log_jac_det.mean())
-        # print(gaussian_log_prob.mean())
+        #print('CE loss: ', bce_loss.item())
+        #print('prior loss: ', -prior_prob.mean().item())
+        #print('log_jac_det: ', -log_jac_det.mean().item())
         loss = loss.mean() / loss_norm
-        print('mean loss: ', loss)
+        #print('mean loss: ', loss.item())
         loss += bce_loss
-        # loss += 1000*recons_loss
-        print('bce loss: ', bce_loss)
+        #print('bce loss: ', bce_loss.item())
         loss.backward()
 
         """
@@ -488,39 +481,35 @@ class CondINNWrapper(nn.Module):
         # print('z-mean: ', z.mean())
 
         # z = z.mean() + torch.empty(z.shape).normal_(mean=0, std=0.005).cuda()
-        mean, logs = self.prior(cond)
-        print("After: ", mean[0].mean(), logs[0].mean())
+        sample_to_take_mean = 0
+        sample_mean = self.decode_and_average2(
+            conditions, self.args.batch_size, pick=sample_to_take_mean)
 
-        if dist == 'laplace':
-            mean = mean.detach().cpu().numpy()
-            logs = logs.detach().cpu().numpy()
-            z = laplace.rvs(loc=mean, scale=np.exp(logs) * 0.01)
-            z = torch.tensor(z).cuda().float()
-        elif dist == 'gaussian':
-            z = modules.GaussianDiag.sample(mean, logs, 0.01)
-        z = modules.unsqueeze2d(z, factor=4)
-        z = z.view(z.size(0), -1)
-
-        print(((z - z_before) ** 2).mean().item())
+        """ test example if for debugging
         z_perturb = z_before + \
             torch.normal(mean=torch.zeros_like(z_before),
                          std=torch.ones_like(z_before) * 0.1)
         print(((z_perturb - z_before) ** 2).mean().item())
-        sample, _ = self.cinn(z, conditions, rev=True)
-        print(sample.shape)
-        print(abs(sample - y).mean())
+
+        self.test_example_z(z_perturb)
+        """
+
+        # sample mean shape
+        # print(sample_mean.shape)
+        # reconstruction error
+        #print(abs(sample_mean - y).mean())
 
         losses = {
             'train_loss': loss,
             'prior_prob': prior_prob.mean() / loss_norm,
             'logdet': log_jac_det.mean() / loss_norm,
             'bce_loss': bce_loss,
-            'recons_error': abs(sample - y).mean()
+            'recons_error': abs(sample_mean - y[sample_to_take_mean]).mean()
         }
 
         # z = z.view(z.size(0), 3, 64, 64)
 
-        return sample, losses
+        return sample_mean, losses
 
     @staticmethod
     def sample_gaussian(size, truncate_std=None, gpu=None):
@@ -546,10 +535,61 @@ class CondINNWrapper(nn.Module):
         y = y if gpu is None else y.cuda(gpu)
         return y
 
-    def decode(self, x, cond):
+    def decode_and_average(self, img, class_cond, nr_sample, pick=None):
+
+        x = self.decode(img, class_cond, nr_sample, pick=pick)
+        sample_mean = x.sum(dim=0)
+
+        return sample_mean
+
+    def decode_and_average2(self, conditions, nr_sample, pick=None, dist='gaussian'):
+
+        x = self.decode_using_learned_sampler(conditions, nr_sample, pick=pick)
+        sample_mean = x.sum(dim=0)
+        #sample_mean = x[1]
+
+        return sample_mean
+
+    def decode_using_learned_sampler(self, conditions, nr_sample, pick=None, dist='gaussian'):
+
+        if nr_sample > 16:
+            assert ValueError("Too many samples for batch execution")
+
+        def sample_from_dist(dist, mean, logs, stddev=0.01):
+            if dist == 'laplace':
+                mean = mean.detach().cpu().numpy()
+                logs = logs.detach().cpu().numpy()
+                z = laplace.rvs(loc=mean, scale=np.exp(logs) * stddev)
+                z = torch.tensor(z).cuda().float()
+            elif dist == 'gaussian':
+                z_list = []
+                for i in range(mean.size(0)):
+                    z = modules.GaussianDiag.sample(
+                        mean[i], logs[i], stddev).unsqueeze(0)
+                    z = modules.unsqueeze2d(z, factor=4)
+                    z = z.view(z.size(0), -1)
+                    z_list.append(z)
+                z = torch.cat(z_list, dim=0)
+            return z
+
+        if pick is not None:
+            cond0 = conditions[0][pick].unsqueeze(0).repeat(nr_sample, 1, 1, 1)
+            conditions[0].detach()
+            cond1 = conditions[1][pick].unsqueeze(0).repeat(nr_sample, 1, 1, 1)
+            conditions[1].detach()
+            cond2 = conditions[2][pick].unsqueeze(0).repeat(nr_sample, 1)
+            conditions[2].detach()
+            conditions = [cond0, cond1, cond2]
+
+        mean, logs = self.prior(cond2)
+        z = sample_from_dist(dist, mean, logs)
+        x, _ = self.cinn(z, conditions, rev=True)
+        return x
+
+    def decode(self, x, class_cond, nr_sample, pick=None):
 
         x = x.float().cuda()
-        cond = cond.cuda()
+        class_cond = class_cond.cuda()
 
         # conditions = self.conditioning(x, cond)
         conditions = []
@@ -557,13 +597,9 @@ class CondINNWrapper(nn.Module):
         conditions.append(x)
         x = modules.squeeze2d(x, factor=2)
         conditions.append(x)
-        conditions.append(cond)
+        conditions.append(class_cond)
 
-        mean, logs = self.prior(cond)
-        z = modules.GaussianDiag.sample(mean, logs, 0.01)
-        z = modules.unsqueeze2d(z, factor=4)
-        z = z.view(z.size(0), -1)
-        x, _ = self.cinn(z, conditions, rev=True)
+        x = self.decode_using_learned_sampler(conditions, nr_sample, pick=pick)
 
         return x
 
