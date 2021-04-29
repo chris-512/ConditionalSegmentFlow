@@ -51,7 +51,7 @@ def decode_mask(file_path, num_classes=80, nr_samples_from_mask=500):
     else:
         class_label_id = 0
 
-    binary_mask = cv2.resize(binary_mask, (256, 256))[:, :, 0]
+    binary_mask = cv2.resize(binary_mask, (128, 128))[:, :, 0]
 
     return binary_mask, class_label_id
 

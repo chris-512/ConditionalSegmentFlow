@@ -11,8 +11,8 @@ from torchvision.models.resnet import resnet50, resnet101
 from torchvision.models.detection.backbone_utils import resnet_fpn_backbone
 import mmfp_utils
 
-import FrEIA.framework as Ff
-import FrEIA.modules as Fm
+from FrEIA.framework import *
+from FrEIA.modules import *
 from models.reshapes import haar_multiplex_layer
 import models.subnet_coupling as subnet_coupling
 import models.config as c
@@ -90,60 +90,143 @@ class ListModule(nn.Module):
         return len(self._modules)
 
 
-class CondINN(nn.Module):
+class Trainable(nn.Module):
+
+    def __init__(self):
+        super(Trainable, self).__init__()
+        self.optimizers = []
+        self.schedulers = []
+
+    def make_optimizer(self, opt_type, opt_args, trainable_params):
+
+        def _get_opt_(params):
+            print('optimizer: ', opt_type)
+            if opt_type == 'adam':
+                optimizer = optim.Adam(params, lr=opt_args['lr'], betas=(opt_args['beta1'], opt_args['beta2']),
+                                       weight_decay=opt_args['weight_decay'])
+            elif opt_type == 'sgd':
+                optimizer = torch.optim.SGD(
+                    params, lr=opt_args['lr'], momentum=opt_args['momentum'])
+            else:
+                assert 0, "args.optimizer should be either 'adam' or 'sgd'"
+            return optimizer
+
+        opt = _get_opt_(trainable_params)
+        return opt
+
+    def make_scheduler(self, args, optimizer):
+        print('learning rate scheduler: ', args.scheduler)
+        # initialize the learning rate scheduler
+        if args.scheduler == 'exponential':
+            scheduler = optim.lr_scheduler.ExponentialLR(
+                optimizer, args.exp_decay)
+        elif args.scheduler == 'step':
+            scheduler = optim.lr_scheduler.StepLR(
+                optimizer, step_size=args.epochs // 2, gamma=0.1)
+        elif args.scheduler == 'linear':
+            def lambda_rule(ep):
+                lr_l = 1.0 - max(0, ep - 0.5 * args.epochs) / \
+                    float(0.5 * args.epochs)
+                return lr_l
+            scheduler = optim.lr_scheduler.LambdaLR(
+                optimizer, lr_lambda=lambda_rule)
+        else:
+            assert 0, "args.schedulers should be either 'exponential' or 'linear'"
+
+        return scheduler
+
+    def save(self, epoch, path):
+        d = {
+            'epoch': epoch,
+            'model': self.state_dict(),
+            'prior-optimizer': self.optimizers[0].state_dict(),
+            'seg-optimizer': self.optimizers[1].state_dict()
+        }
+        torch.save(d, path)
+
+    def resume(self, path, strict=True):
+        ckpt = torch.load(path)
+        self.load_state_dict(ckpt['model'], strict=strict)
+        start_epoch = ckpt['epoch']
+        if self.optimizers[0] is not None:
+            self.optimizers[0].load_state_dict(ckpt['prior-optimizer'])
+        if self.optimizers[1] is not None:
+            self.optimizers[1].load_state_dict(ckpt['seg-optimizer'])
+        return start_epoch
+
+    def scheduler_step(self, epoch):
+        for scheduler in self.schedulers:
+            scheduler.step(epoch=epoch)
+            print('Adjust learning rate: ', scheduler.get_lr())
+
+
+class FlowModule(Trainable):
+
+    def __init__(self, flow_contructor, args=None):
+        super(FlowModule, self).__init__()
+        self.inn = flow_contructor(args)
+
+    @property
+    def flow_model(self):
+        return self.inn
+
+
+class SegFlow(FlowModule):
+
     def __init__(self, args, img_dims=None):
-        super(CondINN, self).__init__()
-        self.args = args
-        self.model_dims = img_dims
-        self.feature_channels = 256
-        self.num_classes = args.num_classes + 1
-        self.fc_cond_length = 256
-        self.ndim_x = 4 * 128 * 128
+        super(SegFlow, self).__init__(self.flow_constructor, args=args)
+        self.img_dims = img_dims
 
-        self.input_node = Ff.InputNode(4, 128, 128, name='inp_points')
-        self.conditions = [Ff.ConditionNode(3 * 4, 256 // 2, 256 // 2, name='cond-0'),
-                           Ff.ConditionNode(
-                               3 * 16, 256 // 4, 256 // 4, name='cond-1'),
-                           Ff.ConditionNode(self.num_classes, name='cond-2')]
+        self.optimizer = self.make_optimizer(
+            'adam', {'lr': args.seg_lr, 'beta1': args.beta1, 'beta2': args.beta2, 'weight_decay': args.weight_decay}, list(self.flow_model.parameters()))
+        self.scheduler = self.make_scheduler(args, self.optimizer)
 
-        self.nodes = []
+    def flow_constructor(self, args, ndim_x=4*64*64):
+
+        input_node = InputNode(4, 64, 64, name='inp_points')
+        conditions = [ConditionNode(3 * 16, 256 // 4, 256 // 4, name='cond-0'),
+                      ConditionNode(
+            3 * 16, 256 // 4, 256 // 4, name='cond-1'),
+            ConditionNode(args.num_classes + 1, name='cond-2')]
+
+        nodes = []
 
         # input nodes
-        self.nodes.append(self.input_node)
+        nodes.append(input_node)
 
         """
         for k in range(1):
             print(k)
             self.nodes.append(Ff.Node(self.nodes[-1], Fm.ActNorm, {},
-                              name=f'actnorm_{k}'))
+                            name=f'actnorm_{k}'))
             print(self.nodes[-1].out0[0].output_dims)
             self.nodes.append(Ff.Node(self.nodes[-1], Fm.IResNetLayer,
-                              {'hutchinson_samples': 20,
-                               'internal_size': 100,
-                               'n_internal_layers': 3},
-                              conditions=[self.conditions[0]],
-                              name=f'i_resnet_{k}'))
+                            {'hutchinson_samples': 20,
+                            'internal_size': 100,
+                            'n_internal_layers': 3},
+                            conditions=[self.conditions[0]],
+                            name=f'i_resnet_{k}'))
             print(self.nodes[-1].out0[0].output_dims)
         """
 
-        block = Fm.GLOWCouplingBlock
+        block = GLOWCouplingBlock
 
         for k in range(13):
             print(k)
-            conv = Ff.Node(self.nodes[-1],
-                           block,
-                           {'subnet_constructor': subnet_conv, 'clamp': 2.0},
-                           conditions=self.conditions[0],
-                           name=F'conv{k}::c1')
-            self.nodes.append(conv)
-            print(self.nodes[-1].out0[0].output_dims)
-            permute = Ff.Node(self.nodes[-1], Fm.PermuteRandom,
-                              {'seed': k}, name=F'permute_{k}')
-            self.nodes.append(permute)
-            print(self.nodes[-1].out0[0].output_dims)
+            conv = Node(nodes[-1],
+                        block,
+                        {'subnet_constructor': subnet_conv, 'clamp': 2.0},
+                        conditions=conditions[0],
+                        name=F'conv{k}::c1')
+            nodes.append(conv)
+            print(nodes[-1].out0[0].output_dims)
+            permute = Node(nodes[-1], PermuteRandom,
+                           {'seed': k}, name=F'permute_{k}')
+            nodes.append(permute)
+            print(nodes[-1].out0[0].output_dims)
 
-        self.nodes.append(Ff.Node(self.nodes[-1], Fm.HaarDownsampling, {}))
-        print(self.nodes[-1].out0[0].output_dims)
+        nodes.append(Node(nodes[-1], HaarDownsampling, {}))
+        print(nodes[-1].out0[0].output_dims)
 
         """
         for k in range(4):
@@ -154,14 +237,14 @@ class CondINN(nn.Module):
                 subnet = subnet_conv2
 
             linear = Ff.Node(self.nodes[-1],
-                             block,
-                             {'subnet_constructor': subnet, 'clamp': 1.2},
-                             # conditions=self.conditions[1],
-                             name=F'conv_low_res_{k}')
+                            block,
+                            {'subnet_constructor': subnet, 'clamp': 1.2},
+                            # conditions=self.conditions[1],
+                            name=F'conv_low_res_{k}')
             self.nodes.append(linear)
             print(self.nodes[-1].out0[0].output_dims)
             permute = Ff.Node(self.nodes[-1], Fm.PermuteRandom,
-                              {'seed': k}, name=F'permute_low_res_{k}')
+                            {'seed': k}, name=F'permute_low_res_{k}')
             self.nodes.append(permute)
             print(self.nodes[-1].out0[0].output_dims)
             if k % 2 != 0:
@@ -171,41 +254,41 @@ class CondINN(nn.Module):
         print(self.nodes[-1].out0[0].output_dims)
         """
 
-        self.nodes.append(
-            Ff.Node(self.nodes[-1], Fm.Flatten, {}, name='flatten'))
-        print(self.nodes[-1].out0[0].output_dims)
+        nodes.append(
+            Node(nodes[-1], Flatten, {}, name='flatten'))
+        print(nodes[-1].out0[0].output_dims)
 
-        split_node = Ff.Node(self.nodes[-1],
-                             Fm.Split,
-                             {'section_sizes': (
-                                 self.ndim_x // 4, 3 * self.ndim_x // 4), 'dim': 0},
-                             name='split')
-        self.nodes.append(split_node)
-        print(self.nodes[-1].out0[0].output_dims)
+        split_node = Node(nodes[-1],
+                          Split,
+                          {'section_sizes': (
+                              ndim_x // 4, 3 * ndim_x // 4), 'dim': 0},
+                          name='split')
+        nodes.append(split_node)
+        print(nodes[-1].out0[0].output_dims)
 
         # Fully connected part
         for k in range(12):
-            self.nodes.append(Ff.Node(self.nodes[-1],
-                                      block,
-                                      {'subnet_constructor': subnet_fc, 'clamp': 2.0},
-                                      conditions=self.conditions[2],
-                                      name=F'fully_connected_{k}'))
-            print(self.nodes[-1].out0[0].output_dims)
-            self.nodes.append(Ff.Node(self.nodes[-1],
-                                      Fm.PermuteRandom,
-                                      {'seed': k},
-                                      name=F'permute_{k}'))
-            print(self.nodes[-1].out0[0].output_dims)
+            nodes.append(Node(nodes[-1],
+                              block,
+                              {'subnet_constructor': subnet_fc, 'clamp': 2.0},
+                              conditions=conditions[2],
+                              name=F'fully_connected_{k}'))
+            print(nodes[-1].out0[0].output_dims)
+            nodes.append(Node(nodes[-1],
+                              PermuteRandom,
+                              {'seed': k},
+                              name=F'permute_{k}'))
+            print(nodes[-1].out0[0].output_dims)
 
         # Concatenate the fully connected part and the skip connection to get a single output
-        self.nodes.append(Ff.Node([self.nodes[-1].out0, split_node.out1],
-                                  Fm.Concat1d, {'dim': 0}, name='concat'))
-        print(self.nodes[-1].out0[0].output_dims)
+        nodes.append(Node([nodes[-1].out0, split_node.out1],
+                          Concat, {'dim': 0}, name='concat'))
+        print(nodes[-1].out0[0].output_dims)
 
-        self.nodes.append(Ff.OutputNode(self.nodes[-1], name='output'))
+        nodes.append(OutputNode(nodes[-1], name='output'))
 
-        self.cinn = Ff.GraphINN(self.nodes + self.conditions, verbose=False)
-        self.cinn = self.cinn.cuda()
+        inn = GraphINN(nodes + conditions, verbose=False)
+        inn = inn.cuda()
 
         def init_model(model):
             for key, param in model.named_parameters():
@@ -219,23 +302,104 @@ class CondINN(nn.Module):
                     if len(split) > 3 and split[3][-1] == '2':
                         param.data.fill_(0.)
 
-        init_model(self.cinn)
+            return model
 
-    def forward(self, x, cond, rev=False):
+        return init_model(inn)
+
+    def forward(self, x, c=[], rev=False):
         # if load_inn_only:
         #    self.cinn.load_state_dict(torch.load(load_inn_only)['net'])
 
         if rev is False:
             x = modules.squeeze2d(x, factor=2)
-            z, log_jac_det = self.cinn(x, c=cond, rev=rev)
+            z, log_jac_det = self.flow_model(x, c=c, rev=rev)
         else:
-            z, log_jac_det = self.cinn(x, c=cond, rev=rev)
+            z, log_jac_det = self.flow_model(x, c=c, rev=rev)
             z = modules.unsqueeze2d(z, factor=2)
 
         return z, log_jac_det
 
 
-class CondINNWrapper(nn.Module):
+class PriorFlow(FlowModule):
+    def __init__(self, args, extra_params=None):
+        super(PriorFlow, self).__init__(
+            self.flow_constructor, args=args)
+
+        self.optimizer = self.make_optimizer(
+            'adam', {'lr': args.prior_lr, 'beta1': args.beta1, 'beta2': args.beta2, 'weight_decay': args.weight_decay}, list(self.flow_model.parameters()) + list(extra_params))
+        self.scheduler = self.make_scheduler(args, self.optimizer)
+
+    def flow_constructor(self, args, ndim_x=4 * 64 * 64):
+
+        input_node = InputNode(ndim_x, name='inp_points')
+        conditions = [ConditionNode(args.num_classes+1, name='cond-0')]
+
+        nodes = []
+        block = GLOWCouplingBlock
+
+        # input nodes
+        nodes.append(input_node)
+
+        split_node = Node(nodes[-1],
+                          Split,
+                          {'section_sizes': (
+                              ndim_x // 4, 3 * ndim_x // 4), 'dim': 0},
+                          name='split')
+        nodes.append(split_node)
+        print(nodes[-1].out0[0].output_dims)
+
+        # Fully connected part
+        for k in range(4):
+            nodes.append(Node(nodes[-1],
+                              block,
+                              {'subnet_constructor': subnet_fc, 'clamp': 2.0},
+                              conditions=conditions[0],
+                              name=F'fully_connected_{k}'))
+            print(nodes[-1].out0[0].output_dims)
+            nodes.append(Node(nodes[-1],
+                              PermuteRandom,
+                              {'seed': k},
+                              name=F'permute_{k}'))
+            print(nodes[-1].out0[0].output_dims)
+
+        # Concatenate the fully connected part and the skip connection to get a single output
+        nodes.append(Node([nodes[-1].out0, split_node.out1],
+                          Concat, {'dim': 0}, name='concat'))
+        print(nodes[-1].out0[0].output_dims)
+
+        nodes.append(OutputNode(nodes[-1], name='output'))
+
+        inn = GraphINN(nodes + conditions, verbose=False)
+        inn = inn.cuda()
+
+        def init_model(model):
+            for key, param in model.named_parameters():
+                print(key)
+                split = key.split('.')
+                if param.requires_grad:
+                    # c.init_scale = 0.03 (nearly xavier initialization)
+                    param.data = c.init_scale * \
+                        torch.randn(param.data.shape).cuda()
+                    # last convolution in the coeff func
+                    if len(split) > 3 and split[3][-1] == '2':
+                        param.data.fill_(0.)
+            return model
+
+        return init_model(inn)
+
+    def forward(self, x, c=None, rev=False):
+        # if load_inn_only:
+        #    self.cinn.load_state_dict(torch.load(load_inn_only)['net'])
+
+        if rev is False:
+            z, log_jac_det = self.flow_model(x, c=c, rev=rev)
+        else:
+            z, log_jac_det = self.flow_model(x, c=c, rev=rev)
+
+        return z, log_jac_det
+
+
+class CondINNWrapper(Trainable):
     def __init__(self, args, img_dims=None):
         super(CondINNWrapper, self).__init__()
         self.args = args
@@ -243,7 +407,7 @@ class CondINNWrapper(nn.Module):
         """
         self.backbone = ConditionalBackbone(args)
         """
-        self.cinn = CondINN(args)
+
         self.gpu = args.gpu
         self.logprob_type = args.logprob_type
         self.bce_loss = nn.BCEWithLogitsLoss()
@@ -271,7 +435,7 @@ class CondINNWrapper(nn.Module):
                                          )  # 256x8x8
         """
 
-        C = 4*4
+        C = 4
         N = args.num_classes + 1
         W, H = (256//4, 256//4)
         self.learn_top = modules.Conv2dZeros(C * 2, C * 2)
@@ -285,102 +449,15 @@ class CondINNWrapper(nn.Module):
             "test_prior_h",
             nn.Parameter(torch.zeros([args.batch_size//2, 2 * C, H, W])))
 
-        self.optimizer = self.make_optimizer(args)
-        self.scheduler = self.make_scheduler(args, self.optimizer)
+        self.segflow = SegFlow(args)
+        self.priorflow = PriorFlow(
+            args, extra_params=self.project_class.parameters())
 
-    def make_optimizer(self, args):
-        def _get_opt_(params):
-            print('optimizer: ', args.optimizer)
-            if args.optimizer == 'adam':
-                optimizer = optim.Adam(params, lr=args.lr, betas=(args.beta1, args.beta2),
-                                       weight_decay=args.weight_decay)
-            elif args.optimizer == 'sgd':
-                optimizer = torch.optim.SGD(
-                    params, lr=args.lr, momentum=args.momentum)
-            else:
-                assert 0, "args.optimizer should be either 'adam' or 'sgd'"
-            return optimizer
-        """
-        opt = _get_opt_(list(self.backbone.parameters()) +
-                        list(self.cinn.parameters()) +
-                        list(self.fc_cond_net.parameters()) +
-                        list(self.learn_top.parameters()) +
-                        list(self.project_ycond.parameters()) +
-                        list(self.project_class.parameters()) +
-                        list(self.upsample_layers.parameters()))
-        """
-        opt = _get_opt_(list(self.parameters()))
-        return opt
-
-    def save(self, epoch, path):
-        d = {
-            'epoch': epoch,
-            'model': self.state_dict(),
-            'optimizer': self.optimizer.state_dict()
-        }
-        torch.save(d, path)
-
-    def resume(self, path, strict=True):
-        ckpt = torch.load(path)
-        self.load_state_dict(ckpt['model'], strict=strict)
-        start_epoch = ckpt['epoch']
-        if self.optimizer is not None:
-            self.optimizer.load_state_dict(ckpt['optimizer'])
-        return start_epoch
-
-    def get_optimizer(self):
-        return self.optimizer
-
-    def make_scheduler(self, args, optimizer):
-        print('learning rate scheduler: ', args.scheduler)
-        # initialize the learning rate scheduler
-        if args.scheduler == 'exponential':
-            scheduler = optim.lr_scheduler.ExponentialLR(
-                optimizer, args.exp_decay)
-        elif args.scheduler == 'step':
-            scheduler = optim.lr_scheduler.StepLR(
-                optimizer, step_size=args.epochs // 2, gamma=0.1)
-        elif args.scheduler == 'linear':
-            def lambda_rule(ep):
-                lr_l = 1.0 - max(0, ep - 0.5 * args.epochs) / \
-                    float(0.5 * args.epochs)
-                return lr_l
-            scheduler = optim.lr_scheduler.LambdaLR(
-                optimizer, lr_lambda=lambda_rule)
-        else:
-            assert 0, "args.schedulers should be either 'exponential' or 'linear'"
-
-        return scheduler
-
-    def scheduler_step(self, epoch):
-        self.scheduler.step(epoch=epoch)
-        print('Adjust learning rate: ', self.scheduler.get_lr())
-
-    def conditioning(self, x, cond):
-
-        net_outputs = self.backbone(x, cond)
-
-        # 337x8x8
-        net_outputs['3'] = net_outputs['3'].clone(
-        ) + self.upsample_layers[3](net_outputs['pool'], output_size=net_outputs['3'].size())
-        # 337x16x16
-        net_outputs['2'] = net_outputs['2'].clone(
-        ) + self.upsample_layers[2](net_outputs['3'], output_size=net_outputs['2'].size())
-        # 337x32x32
-        net_outputs['1'] = net_outputs['1'].clone(
-        ) + self.upsample_layers[1](net_outputs['2'], output_size=net_outputs['1'].size())
-        # 337x64x64
-        net_outputs['0'] = net_outputs['0'].clone(
-        ) + self.upsample_layers[0](net_outputs['1'], output_size=net_outputs['0'].size())
-
-        cond0 = net_outputs['1']
-
-        cond_net_outputs = self.fc_cond_net(cond0)
-
-        cond1 = cond_net_outputs.view(cond_net_outputs.shape[0], -1)
-
-        # 64x256
-        return [cond0, cond1]
+        self.prior_optimizer = self.priorflow.optimizer
+        self.seg_optimizer = self.segflow.optimizer
+        self.optimizers.extend([self.prior_optimizer, self.seg_optimizer])
+        self.schedulers.extend(
+            [self.priorflow.scheduler, self.segflow.scheduler])
 
     def prior(self, y_onehot=None):
 
@@ -407,7 +484,8 @@ class CondINNWrapper(nn.Module):
 
     def forward(self, x, y, cond, writer=None):
 
-        self.optimizer.zero_grad()
+        self.seg_optimizer.zero_grad()
+        self.prior_optimizer.zero_grad()
 
         batch_size = x.size(0)
 
@@ -417,9 +495,8 @@ class CondINNWrapper(nn.Module):
                                             std=torch.ones_like(y) * 0.001).cuda()
         cond = cond.cuda()
 
-        # conditions = self.conditioning(x, cond)
         conditions = []
-        x = modules.squeeze2d(x, factor=2)
+        x = modules.squeeze2d(x, factor=4)
         conditions.append(x)
         x = modules.squeeze2d(x, factor=2)
         conditions.append(x)
@@ -427,39 +504,44 @@ class CondINNWrapper(nn.Module):
 
         y = y.unsqueeze(1)
 
-        z, log_jac_det = self.cinn(y, conditions)
-        z_before = z
-        z = z.view(-1, 1, y.size(2), y.size(3))
-        z = modules.squeeze2d(z, factor=4)
+        z_prime, seg_log_jac_det = self.segflow(y, c=conditions)
+        z, prior_log_jac_det = self.priorflow(z_prime, c=[cond])
+
+        # z_before = z
+        z_shaped = z_prime.view(-1, 1, y.size(2), y.size(3))
+        # to match with the shapes of [mean, logs]
+        z_shaped = modules.squeeze2d(z_shaped, factor=2)
         loss_norm = y.size(2) * y.size(3)
 
         # cond = [B, 81]
         # z = [B, C, W, H]
         # mean = [B, C, W, H]
         # logs = [B, C, W, H]
+        """
         mean, logs = self.prior(cond)
 
         dist = 'gaussian'
         if dist == 'gaussian':
+            # mean.shape == logs.shape == z.shape
             prior_prob = modules.GaussianDiag.logp(mean, logs, z)
         elif dist == 'laplace':
             prior_prob = -torch.log(torch.tensor(2)) - \
                 torch.abs((z - mean) / torch.exp(logs))
             prior_prob = prior_prob.sum(dim=[1, 2, 3])
+        """
 
         # classification loss
-        y_logits = self.project_class(z.mean(2).mean(2))
+        y_logits = self.project_class(z_shaped.mean(2).mean(2))
         bce_loss = self.bce_loss(y_logits, cond)
 
-        loss = -log_jac_det - prior_prob
-        #print('CE loss: ', bce_loss.item())
-        #print('prior loss: ', -prior_prob.mean().item())
-        #print('log_jac_det: ', -log_jac_det.mean().item())
-        loss = loss.mean() / loss_norm
-        #print('mean loss: ', loss.item())
-        loss += bce_loss
-        #print('bce loss: ', bce_loss.item())
-        loss.backward()
+        loss1 = -seg_log_jac_det
+        loss1 = loss1.mean() / loss_norm
+        loss1.backward(retain_graph=True)
+
+        loss2 = -prior_log_jac_det
+        loss2 = loss2.mean() / loss_norm
+        # loss2 += bce_loss
+        loss2.backward()
 
         """
         for key, params in self.named_parameters():
@@ -470,10 +552,13 @@ class CondINNWrapper(nn.Module):
                 print(params.mean())
             elif "project_ycond" in key:
                 print(params.mean())
-        """
-        torch.nn.utils.clip_grad_norm_(self.parameters(), 5)
 
-        self.optimizer.step()
+        """
+        torch.nn.utils.clip_grad_norm_(self.priorflow.parameters(), 5)
+        torch.nn.utils.clip_grad_norm_(self.segflow.parameters(), 5)
+
+        self.seg_optimizer.step()
+        self.prior_optimizer.step()
 
         # import pdb; pdb.set_trace()
         # print('z-min: ', z.min())
@@ -482,8 +567,8 @@ class CondINNWrapper(nn.Module):
 
         # z = z.mean() + torch.empty(z.shape).normal_(mean=0, std=0.005).cuda()
         sample_to_take_mean = 0
-        sample_mean = self.decode_and_average2(
-            conditions, self.args.batch_size, pick=sample_to_take_mean)
+        sample_mean = self.decode_and_average2(z,
+                                               conditions, self.args.batch_size, pick=sample_to_take_mean)
 
         """ test example if for debugging
         z_perturb = z_before + \
@@ -497,12 +582,12 @@ class CondINNWrapper(nn.Module):
         # sample mean shape
         # print(sample_mean.shape)
         # reconstruction error
-        #print(abs(sample_mean - y).mean())
+        # print(abs(sample_mean - y).mean())
 
         losses = {
-            'train_loss': loss,
-            'prior_prob': prior_prob.mean() / loss_norm,
-            'logdet': log_jac_det.mean() / loss_norm,
+            'train_loss': loss1,
+            'prior_logdet': prior_log_jac_det.mean() / loss_norm,
+            'logdet': seg_log_jac_det.mean() / loss_norm,
             'bce_loss': bce_loss,
             'recons_error': abs(sample_mean - y[sample_to_take_mean]).mean()
         }
@@ -542,34 +627,27 @@ class CondINNWrapper(nn.Module):
 
         return sample_mean
 
-    def decode_and_average2(self, conditions, nr_sample, pick=None, dist='gaussian'):
+    def decode_and_average2(self, z, conditions, nr_sample, pick=None, dist='gaussian'):
 
-        x = self.decode_using_learned_sampler(conditions, nr_sample, pick=pick)
-        sample_mean = x.sum(dim=0)
-        #sample_mean = x[1]
+        x = self.decode_using_learned_sampler(
+            z, conditions, nr_sample, pick=pick)
+        # sample_mean = x.sum(dim=0)
+        sample_mean = x[pick]
 
         return sample_mean
 
-    def decode_using_learned_sampler(self, conditions, nr_sample, pick=None, dist='gaussian'):
+    def decode_using_learned_sampler(self, z, conditions, nr_sample, pick=None, dist='gaussian'):
 
         if nr_sample > 16:
             assert ValueError("Too many samples for batch execution")
 
-        def sample_from_dist(dist, mean, logs, stddev=0.01):
-            if dist == 'laplace':
-                mean = mean.detach().cpu().numpy()
-                logs = logs.detach().cpu().numpy()
-                z = laplace.rvs(loc=mean, scale=np.exp(logs) * stddev)
-                z = torch.tensor(z).cuda().float()
-            elif dist == 'gaussian':
-                z_list = []
-                for i in range(mean.size(0)):
-                    z = modules.GaussianDiag.sample(
-                        mean[i], logs[i], stddev).unsqueeze(0)
-                    z = modules.unsqueeze2d(z, factor=4)
-                    z = z.view(z.size(0), -1)
-                    z_list.append(z)
-                z = torch.cat(z_list, dim=0)
+        def sample_from_dist(dist, z, stddev=0.1):
+
+            if dist == 'gaussian':
+                z = z + torch.normal(mean=torch.zeros_like(
+                    z), std=torch.ones_like(z) * stddev)
+                # z = z.view(z.size(0), -1)
+
             return z
 
         if pick is not None:
@@ -581,9 +659,10 @@ class CondINNWrapper(nn.Module):
             conditions[2].detach()
             conditions = [cond0, cond1, cond2]
 
-        mean, logs = self.prior(cond2)
-        z = sample_from_dist(dist, mean, logs)
-        x, _ = self.cinn(z, conditions, rev=True)
+        # mean, logs = self.prior(cond2)
+        z = sample_from_dist(dist, z, stddev=0.1)
+        z_prime, _ = self.priorflow(z, c=cond2, rev=True)
+        x, _ = self.segflow(z_prime, c=conditions, rev=True)
         return x
 
     def decode(self, x, class_cond, nr_sample, pick=None):
@@ -591,9 +670,8 @@ class CondINNWrapper(nn.Module):
         x = x.float().cuda()
         class_cond = class_cond.cuda()
 
-        # conditions = self.conditioning(x, cond)
         conditions = []
-        x = modules.squeeze2d(x, factor=2)
+        x = modules.squeeze2d(x, factor=4)
         conditions.append(x)
         x = modules.squeeze2d(x, factor=2)
         conditions.append(x)

@@ -139,18 +139,18 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
 
             if bidx % 10 == 0:
                 train_loss = losses['train_loss']
-                prior_prob = losses['prior_prob']
+                prior_logdet = losses['prior_logdet']
                 logdet = losses['logdet']
                 bce_loss = losses['bce_loss']
                 recons_error = losses['recons_error']
 
-                tensorboard_writer.add_scalar("Loss/Train", train_loss, step)
+                tensorboard_writer.add_scalar("loss/train", train_loss, step)
                 tensorboard_writer.add_scalar(
-                    "Loss/PriorProb", prior_prob, step)
-                tensorboard_writer.add_scalar("Loss/LogDet", logdet, step)
-                tensorboard_writer.add_scalar("Loss/BCELoss", bce_loss, step)
+                    "priorflow/logdet", prior_logdet, step)
+                tensorboard_writer.add_scalar("segflow/logdet", logdet, step)
+                tensorboard_writer.add_scalar("loss/bce", bce_loss, step)
                 tensorboard_writer.add_scalar(
-                    "Loss/ReconsError", recons_error, step)
+                    "loss/recons", recons_error, step)
                 tensorboard_writer.add_image(
                     "sample_mean", reverse_sample, step)
 
