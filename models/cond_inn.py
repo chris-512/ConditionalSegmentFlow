@@ -37,32 +37,23 @@ def subnet_initialization(m):
 
 def subnet_fc(c_in, c_out):
     print('subnet_fc: ', c_in, c_out)
-    net = nn.Sequential(nn.Linear(c_in, 32), nn.ReLU(),
-                        nn.Linear(32,  c_out))
+    net = nn.Sequential(nn.Linear(c_in, 64), nn.LeakyReLU(),
+                        nn.Linear(64,  c_out))
     net.apply(subnet_initialization)
     return net
 
 
 def subnet_conv(c_in, c_out):
     print('subnet_cont: ', c_in, c_out)
-    net = nn.Sequential(nn.Conv2d(c_in, 32,   3, padding=1), nn.ReLU(),
-                        nn.Conv2d(32,  c_out, 3, padding=1))
+    net = nn.Sequential(nn.Conv2d(c_in, 128,   3, padding=1), nn.LeakyReLU(),
+                        nn.Conv2d(128,  c_out, 3, padding=1))
     net.apply(subnet_initialization)
     return net
-
-
-def subnet_conv2(c_in, c_out):
-    print('subnet_cont: ', c_in, c_out)
-    net = nn.Sequential(nn.Conv2d(c_in, 64,   3, padding=1), nn.ReLU(),
-                        nn.Conv2d(64,  c_out, 3, padding=1))
-    net.apply(subnet_initialization)
-    return net
-
 
 def subnet_conv_1x1(c_in, c_out):
     print('subnet_conv_1x1: ', c_in, c_out)
-    net = nn.Sequential(nn.Conv2d(c_in, 64,   1), nn.ReLU(),
-                        nn.Conv2d(64,  c_out, 1))
+    net = nn.Sequential(nn.Conv2d(c_in, 128,   1), nn.LeakyReLU(),
+                        nn.Conv2d(128,  c_out, 1))
     net.apply(subnet_initialization)
     return net
 
@@ -186,8 +177,8 @@ class SegFlow(FlowModule):
         input_node = InputNode(4, 64, 64, name='inp_points')
         conditions = [ConditionNode(3 * 16, 256 // 4, 256 // 4, name='cond-0'),
                       ConditionNode(
-            3 * 16, 256 // 4, 256 // 4, name='cond-1'),
-            ConditionNode(args.num_classes + 1, name='cond-2')]
+            3 * 64, 256 // 8, 256 // 8, name='cond-1'),
+            ConditionNode(1000, name='cond-2')]
 
         nodes = []
 
@@ -211,7 +202,7 @@ class SegFlow(FlowModule):
 
         block = GLOWCouplingBlock
 
-        for k in range(13):
+        for k in range(8):
             print(k)
             conv = Node(nodes[-1],
                         block,
@@ -228,31 +219,25 @@ class SegFlow(FlowModule):
         nodes.append(Node(nodes[-1], HaarDownsampling, {}))
         print(nodes[-1].out0[0].output_dims)
 
-        """
-        for k in range(4):
+        for k in range(8):
             print(k)
             if k % 2 == 0:
                 subnet = subnet_conv_1x1
             else:
-                subnet = subnet_conv2
+                subnet = subnet_conv
 
-            linear = Ff.Node(self.nodes[-1],
+            linear = Node(nodes[-1],
                             block,
                             {'subnet_constructor': subnet, 'clamp': 1.2},
-                            # conditions=self.conditions[1],
+                            conditions=conditions[1],
                             name=F'conv_low_res_{k}')
-            self.nodes.append(linear)
-            print(self.nodes[-1].out0[0].output_dims)
-            permute = Ff.Node(self.nodes[-1], Fm.PermuteRandom,
+            nodes.append(linear)
+            print(nodes[-1].out0[0].output_dims)
+            permute = Node(nodes[-1], PermuteRandom,
                             {'seed': k}, name=F'permute_low_res_{k}')
-            self.nodes.append(permute)
-            print(self.nodes[-1].out0[0].output_dims)
-            if k % 2 != 0:
-                self.nodes.append(
-                    Ff.Node(self.nodes[-1], Fm.IRevNetDownsampling, {}))
-                print(self.nodes[-1].out0[0].output_dims)
-        print(self.nodes[-1].out0[0].output_dims)
-        """
+            nodes.append(permute)
+            print(nodes[-1].out0[0].output_dims)
+        print(nodes[-1].out0[0].output_dims)
 
         nodes.append(
             Node(nodes[-1], Flatten, {}, name='flatten'))
@@ -267,7 +252,7 @@ class SegFlow(FlowModule):
         print(nodes[-1].out0[0].output_dims)
 
         # Fully connected part
-        for k in range(12):
+        for k in range(4):
             nodes.append(Node(nodes[-1],
                               block,
                               {'subnet_constructor': subnet_fc, 'clamp': 2.0},
@@ -326,13 +311,13 @@ class PriorFlow(FlowModule):
             self.flow_constructor, args=args)
 
         self.optimizer = self.make_optimizer(
-            'adam', {'lr': args.prior_lr, 'beta1': args.beta1, 'beta2': args.beta2, 'weight_decay': args.weight_decay}, list(self.flow_model.parameters()) + list(extra_params))
+            'adam', {'lr': args.prior_lr, 'beta1': args.beta1, 'beta2': args.beta2, 'weight_decay': args.weight_decay}, list(self.flow_model.parameters()) + extra_params)
         self.scheduler = self.make_scheduler(args, self.optimizer)
 
     def flow_constructor(self, args, ndim_x=4 * 64 * 64):
 
         input_node = InputNode(ndim_x, name='inp_points')
-        conditions = [ConditionNode(args.num_classes+1, name='cond-0')]
+        conditions = [ConditionNode(1000, name='cond-0')]
 
         nodes = []
         block = GLOWCouplingBlock
@@ -353,7 +338,7 @@ class PriorFlow(FlowModule):
             nodes.append(Node(nodes[-1],
                               block,
                               {'subnet_constructor': subnet_fc, 'clamp': 2.0},
-                              conditions=conditions[0],
+                              #conditions=conditions[0],
                               name=F'fully_connected_{k}'))
             print(nodes[-1].out0[0].output_dims)
             nodes.append(Node(nodes[-1],
@@ -412,6 +397,7 @@ class CondINNWrapper(Trainable):
         self.logprob_type = args.logprob_type
         self.bce_loss = nn.BCEWithLogitsLoss()
         self.fc_cond_length = 256
+        self.iter = 0
 
         """
         upsample_layers = []
@@ -436,11 +422,12 @@ class CondINNWrapper(Trainable):
         """
 
         C = 4
-        N = args.num_classes + 1
+        N = 1000 # args.num_classes + 1
         W, H = (256//4, 256//4)
-        self.learn_top = modules.Conv2dZeros(C * 2, C * 2)
-        self.project_ycond = modules.LinearZeros(N, C*2)
-        self.project_class = modules.LinearZeros(C, N)
+        self.learn_top = nn.Sequential(modules.Conv2dZeros(C * 2, C * 2), nn.LeakyReLU(),
+                        modules.Conv2dZeros(C * 2, C * 2)) 
+        self.project_ycond = nn.Sequential(modules.LinearZeros(N, N), nn.LeakyReLU(), modules.LinearZeros(N, C*2), nn.LeakyReLU(), modules.LinearZeros(C*2, C*2))
+        self.project_class = nn.Sequential(modules.LinearZeros(256, 512), nn.LeakyReLU(), modules.LinearZeros(512, 512), nn.LeakyReLU(), modules.LinearZeros(512, args.num_classes + 1))
 
         self.register_parameter(
             "prior_h",
@@ -451,7 +438,7 @@ class CondINNWrapper(Trainable):
 
         self.segflow = SegFlow(args)
         self.priorflow = PriorFlow(
-            args, extra_params=self.project_class.parameters())
+            args, extra_params=list(self.project_class.parameters()) + list(self.project_ycond.parameters()) + list(self.learn_top.parameters()))
 
         self.prior_optimizer = self.priorflow.optimizer
         self.seg_optimizer = self.segflow.optimizer
@@ -484,64 +471,67 @@ class CondINNWrapper(Trainable):
 
     def forward(self, x, y, cond, writer=None):
 
+        self.iter += 1
+
         self.seg_optimizer.zero_grad()
         self.prior_optimizer.zero_grad()
 
         batch_size = x.size(0)
 
         x = x.float().cuda()
-        y = y.float().cuda()
-        y = y.float().cuda() + torch.normal(mean=torch.zeros_like(y),
-                                            std=torch.ones_like(y) * 0.001).cuda()
+        y = y.float().cuda() + 1.0/256 *torch.normal(mean=torch.zeros_like(y),
+                                            std=torch.ones_like(y)).cuda()
         cond = cond.cuda()
+        class_labels = (cond == 1).nonzero(as_tuple=True)[1].reshape(cond.size(0), -1).repeat(1, 1000)
+        class_labels = class_labels.float().cuda()
 
         conditions = []
         x = modules.squeeze2d(x, factor=4)
         conditions.append(x)
         x = modules.squeeze2d(x, factor=2)
         conditions.append(x)
-        conditions.append(cond)
+        conditions.append(class_labels)
 
         y = y.unsqueeze(1)
 
-        z_prime, seg_log_jac_det = self.segflow(y, c=conditions)
-        z, prior_log_jac_det = self.priorflow(z_prime, c=[cond])
+        z, seg_log_jac_det = self.segflow(y, c=conditions)
+        #z, prior_log_jac_det = self.priorflow(z_prime, c=[cond])
 
         # z_before = z
-        z_shaped = z_prime.view(-1, 1, y.size(2), y.size(3))
+        #z_shaped = z_prime.view(-1, 1, y.size(2), y.size(3))
+        z_shaped2 = z.view(-1, 1, y.size(2), y.size(3))
         # to match with the shapes of [mean, logs]
-        z_shaped = modules.squeeze2d(z_shaped, factor=2)
+        #z_shaped = modules.squeeze2d(z_shaped, factor=2)
+        z_shaped2 = modules.squeeze2d(z_shaped2, factor=2)
         loss_norm = y.size(2) * y.size(3)
 
         # cond = [B, 81]
         # z = [B, C, W, H]
         # mean = [B, C, W, H]
         # logs = [B, C, W, H]
-        """
-        mean, logs = self.prior(cond)
+        mean, logs = self.prior(class_labels)
 
         dist = 'gaussian'
         if dist == 'gaussian':
             # mean.shape == logs.shape == z.shape
-            prior_prob = modules.GaussianDiag.logp(mean, logs, z)
+            prior_prob = modules.GaussianDiag.logp(mean, logs, z_shaped2)
         elif dist == 'laplace':
             prior_prob = -torch.log(torch.tensor(2)) - \
                 torch.abs((z - mean) / torch.exp(logs))
-            prior_prob = prior_prob.sum(dim=[1, 2, 3])
-        """
+            #prior_prob = prior_prob.sum(dim=[1, 2, 3])
 
         # classification loss
-        y_logits = self.project_class(z_shaped.mean(2).mean(2))
+        y_logits = self.project_class(z_shaped2.mean(2).reshape(16, -1))
         bce_loss = self.bce_loss(y_logits, cond)
+        _, predicted = torch.max(y_logits, dim=1)
+        labels = (cond == 1).nonzero(as_tuple=True)[1]
+        accuracy = (predicted == labels).sum() / len(labels)
 
-        loss1 = -seg_log_jac_det
+        loss1 = -seg_log_jac_det # -prior_log_jac_det
+        loss1 += -prior_prob
         loss1 = loss1.mean() / loss_norm
-        loss1.backward(retain_graph=True)
-
-        loss2 = -prior_log_jac_det
-        loss2 = loss2.mean() / loss_norm
-        # loss2 += bce_loss
-        loss2.backward()
+        loss1 += bce_loss
+        loss1.backward()
 
         """
         for key, params in self.named_parameters():
@@ -554,8 +544,8 @@ class CondINNWrapper(Trainable):
                 print(params.mean())
 
         """
-        torch.nn.utils.clip_grad_norm_(self.priorflow.parameters(), 5)
-        torch.nn.utils.clip_grad_norm_(self.segflow.parameters(), 5)
+        torch.nn.utils.clip_grad_norm_(self.priorflow.parameters(), 8)
+        torch.nn.utils.clip_grad_norm_(self.segflow.parameters(), 8)
 
         self.seg_optimizer.step()
         self.prior_optimizer.step()
@@ -565,10 +555,8 @@ class CondINNWrapper(Trainable):
         # print('z-max: ', z.max())
         # print('z-mean: ', z.mean())
 
-        # z = z.mean() + torch.empty(z.shape).normal_(mean=0, std=0.005).cuda()
         sample_to_take_mean = 0
-        sample_mean = self.decode_and_average2(z,
-                                               conditions, self.args.batch_size, pick=sample_to_take_mean)
+        sample_mean = self.decode_and_average2(conditions, self.args.batch_size, pick=sample_to_take_mean)
 
         """ test example if for debugging
         z_perturb = z_before + \
@@ -579,15 +567,12 @@ class CondINNWrapper(Trainable):
         self.test_example_z(z_perturb)
         """
 
-        # sample mean shape
-        # print(sample_mean.shape)
-        # reconstruction error
-        # print(abs(sample_mean - y).mean())
-
         losses = {
             'train_loss': loss1,
-            'prior_logdet': prior_log_jac_det.mean() / loss_norm,
+            'accuracy': accuracy,
+            'prior_logdet': 0, # prior_log_jac_det.mean() / loss_norm,
             'logdet': seg_log_jac_det.mean() / loss_norm,
+            'prior_prob': prior_prob.mean() / loss_norm,
             'bce_loss': bce_loss,
             'recons_error': abs(sample_mean - y[sample_to_take_mean]).mean()
         }
@@ -623,30 +608,31 @@ class CondINNWrapper(Trainable):
     def decode_and_average(self, img, class_cond, nr_sample, pick=None):
 
         x = self.decode(img, class_cond, nr_sample, pick=pick)
-        sample_mean = x.sum(dim=0)
+        sample_mean = x.mean(dim=0)
 
         return sample_mean
 
-    def decode_and_average2(self, z, conditions, nr_sample, pick=None, dist='gaussian'):
+    def decode_and_average2(self, conditions, nr_sample, pick=None, dist='gaussian'):
 
         x = self.decode_using_learned_sampler(
-            z, conditions, nr_sample, pick=pick)
-        # sample_mean = x.sum(dim=0)
-        sample_mean = x[pick]
+            conditions, nr_sample, pick=pick)
+        sample_mean = x.mean(dim=0)
 
         return sample_mean
 
-    def decode_using_learned_sampler(self, z, conditions, nr_sample, pick=None, dist='gaussian'):
+    def decode_using_learned_sampler(self, conditions, nr_sample, pick=None, dist='gaussian'):
 
         if nr_sample > 16:
             assert ValueError("Too many samples for batch execution")
 
-        def sample_from_dist(dist, z, stddev=0.1):
+        def sample_from_dist(dist, mean, logs, stddev=0.1):
 
             if dist == 'gaussian':
-                z = z + torch.normal(mean=torch.zeros_like(
-                    z), std=torch.ones_like(z) * stddev)
-                # z = z.view(z.size(0), -1)
+                #z = torch.normal(mean=torch.zeros_like(
+                #    mean), std=torch.ones_like(mean) * stddev)
+                z = modules.GaussianDiag.sample(mean, logs, eps_std=stddev)
+                z = modules.unsqueeze2d(z, factor=2)
+                z = z.view(z.size(0), -1)
 
             return z
 
@@ -659,8 +645,8 @@ class CondINNWrapper(Trainable):
             conditions[2].detach()
             conditions = [cond0, cond1, cond2]
 
-        # mean, logs = self.prior(cond2)
-        z = sample_from_dist(dist, z, stddev=0.1)
+        mean, logs = self.prior(cond2)
+        z = sample_from_dist(dist, mean, logs, stddev=0.1)
         z_prime, _ = self.priorflow(z, c=cond2, rev=True)
         x, _ = self.segflow(z_prime, c=conditions, rev=True)
         return x

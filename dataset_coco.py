@@ -15,8 +15,7 @@ def decode_img(file_path, width=None, height=None):
     """
     img = cv2.imread(file_path)
 
-    img = img / 255.0
-    img = np.subtract(img, 0.4)
+    #img = np.subtract(img, 0.4)
     if width is not None and height is not None:
         img = cv2.resize(img, (width, height),
                          interpolation=cv2.INTER_LANCZOS4)
@@ -44,7 +43,7 @@ def decode_mask(file_path, num_classes=80, nr_samples_from_mask=500):
         #x_found_ind = (yx[1] * down_ratios[1]).astype(np.int)
         N = len(binary_mask[segim == chosen_cls_id])
         if N > 30000:
-            binary_mask[segim == chosen_cls_id] = 1.0
+            binary_mask[segim == chosen_cls_id] = 255
             class_label_id = (chosen_cls_id + 1)
         else:
             class_label_id = 0

@@ -53,18 +53,21 @@ def parse_first_example_to_npy(input_tensor, gt_mask_tensor, pred_mask_tensor, c
     rgb_im = input_tensor[0].cpu(
     ).detach().numpy().squeeze().copy()
     rgb_im = np.transpose(rgb_im[:3], (1, 2, 0))
-    rgb_im = ((rgb_im + 1) * 255/2.).astype(np.uint8)
+    #rgb_im = ((rgb_im + 1) * 255/2.).astype(np.uint8)
 
     seg_im = gt_mask_tensor[0].cpu().detach().numpy().squeeze()
     seg_im = np.tile(np.expand_dims(cv2.resize(
         seg_im, (256, 256)), axis=2), (1, 1, 3))
-    seg_im = (np.clip(seg_im, 0, 1) * 255).astype(np.uint8)
+    seg_im = (np.clip(seg_im, 0, 255)).astype(np.uint8)
 
     pred_seg_im = pred_mask_tensor.repeat(3, 1, 1)
     pred_seg_im = pred_seg_im.cpu().detach().numpy().squeeze()
     pred_seg_im = np.transpose(pred_seg_im, (1, 2, 0))
     pred_seg_im = cv2.resize(pred_seg_im, (256, 256))
-    pred_seg_im = (np.clip(pred_seg_im, 0, 1) * 255).astype(np.uint8)
+    pred_seg_im = np.clip(pred_seg_im, 0, 255)
+    #pred_seg_im[pred_seg_im > 0.1] = 1
+    #pred_seg_im[pred_seg_im <= 0.3] = 0
+    pred_seg_im = (pred_seg_im).astype(np.uint8)
 
     return rgb_im, seg_im, pred_seg_im, class_label[0]
 
@@ -99,6 +102,7 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
     # main training loop
     start_time = time.time()
     loss_avg_meter = AverageValueMeter()
+    acc_avg_meter = AverageValueMeter()
     if args.distributed:
         print("[Rank %d] World size : %d" % (args.rank, dist.get_world_size()))
 
@@ -137,16 +141,24 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
             reverse_sample, losses = model(input_tensor, gt_mask_tensor,
                                            class_condition)
 
-            if bidx % 10 == 0:
+            if bidx % 5 == 0:
                 train_loss = losses['train_loss']
                 prior_logdet = losses['prior_logdet']
+                prior_prob = losses['prior_prob']
                 logdet = losses['logdet']
                 bce_loss = losses['bce_loss']
                 recons_error = losses['recons_error']
+                accuracy = losses['accuracy']
+
+                acc_avg_meter.update(accuracy.item())
+
 
                 tensorboard_writer.add_scalar("loss/train", train_loss, step)
+                tensorboard_writer.add_scalar("acc/train", acc_avg_meter.avg, step)
                 tensorboard_writer.add_scalar(
                     "priorflow/logdet", prior_logdet, step)
+                tensorboard_writer.add_scalar(
+                    "prior_prob", prior_prob, step)
                 tensorboard_writer.add_scalar("segflow/logdet", logdet, step)
                 tensorboard_writer.add_scalar("loss/bce", bce_loss, step)
                 tensorboard_writer.add_scalar(
